@@ -157,4 +157,4 @@ mix format              # format code
 
 ## License
 
-Private — designed over aperitivo, April 2026.
+Apache License 2.0 — Copyright 2026 Alessio Battistutta. See [LICENSE](LICENSE).
