@@ -87,25 +87,24 @@ Leaf nodes reference these with `${key}` syntax. The walker interpolates them at
 
 Context menu actions: Connect from/to, Duplicate, Rename, Disconnect all, Delete, Reverse edge, Fit to view, Reset zoom.
 
-## NixOS Deploy Target
+## Deploy Configuration
 
-### UTM VM (recommended for Apple Silicon)
+To deploy generated configs to a NixOS machine, set your target via environment variables or `config/deploy.secret.exs`:
 
-NixOS ARM64 VM running natively in UTM. Full `nixos-rebuild switch` with real service activation.
-
-Configure in `config/config.exs`:
-
-```elixir
-config :tomato, Tomato.Deploy,
-  host: "192.168.64.3",
-  port: 22,
-  user: "root",
-  password: "tomato"
+```bash
+export TOMATO_DEPLOY_HOST=your-nixos-host
+export TOMATO_DEPLOY_PORT=22
+export TOMATO_DEPLOY_USER=root
+export TOMATO_DEPLOY_PASSWORD=your-password
 ```
 
-### OrbStack (syntax validation)
+Or copy the example file:
 
-Ubuntu VM with Nix installed. Validates config syntax with `nix-instantiate --parse`. No full rebuild.
+```bash
+cp config/deploy.secret.exs.example config/deploy.secret.exs
+```
+
+See `config/deploy.secret.exs.example` for the format. This file is gitignored.
 
 ## Architecture
 
@@ -153,7 +152,6 @@ mix format              # format code
 
 - Elixir 1.15+
 - Erlang/OTP 26+
-- NixOS target machine for deploy (UTM VM or remote server)
 
 ## License
 
