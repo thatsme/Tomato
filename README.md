@@ -4,6 +4,8 @@ A hierarchical DAG engine for composable NixOS configuration management.
 
 Tomato models system configurations as directed acyclic graphs organized in floors (levels). Each leaf node holds a NixOS configuration fragment. Gateway nodes point to subgraphs on the floor below. Walking the graph top-down in topological order composes a valid `configuration.nix` — which can be deployed to a NixOS machine via SSH with a single click.
 
+![Tomato Graph Editor](docs/screenshots/tomato_screen.png)
+
 ## Quick Start
 
 ```bash
