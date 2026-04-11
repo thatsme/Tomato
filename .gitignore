@@ -48,3 +48,5 @@ npm-debug.log
 .DS_Store
 .claude/
 .giulia/
+CLAUDE.md
+AGENTS.md
