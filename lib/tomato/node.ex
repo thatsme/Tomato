@@ -1,10 +1,28 @@
 defmodule Tomato.Node do
   @moduledoc """
   The atomic unit of the graph.
+
+  ## `:target`
+
+  Leaf nodes declare which backend their content is compatible with
+  via the `:target` field:
+
+    * `:nixos` (default) — NixOS system-level config. Safe for
+      `nixosConfigurations` and the traditional `configuration.nix`
+      backend. Not included in `homeConfigurations`.
+    * `:home_manager` — Home Manager user-level config. Included
+      only in Home Manager machines.
+    * `:all` — compatible with both. Rare; use when a fragment only
+      sets option paths that exist in both schemas.
+
+  The walker filters shared root-level fragments and in-machine
+  fragments by this field against the current machine type at
+  generation time.
   """
 
   @type node_type :: :input | :output | :leaf | :gateway
   @type machine_type :: :nixos | :home_manager
+  @type target :: :nixos | :home_manager | :all
   @type machine_meta :: %{
           optional(:hostname) => String.t(),
           optional(:system) => String.t(),
@@ -16,6 +34,7 @@ defmodule Tomato.Node do
           id: String.t(),
           name: String.t(),
           type: node_type(),
+          target: target(),
           template_fn: {module(), atom(), list()} | nil,
           subgraph_id: String.t() | nil,
           inputs: list(String.t()),
@@ -37,7 +56,8 @@ defmodule Tomato.Node do
     :machine,
     inputs: [],
     outputs: [],
-    position: %{x: 0, y: 0}
+    position: %{x: 0, y: 0},
+    target: :nixos
   ]
 
   @spec new(keyword()) :: t()
@@ -46,6 +66,7 @@ defmodule Tomato.Node do
       id: attrs[:id] || generate_id(),
       name: attrs[:name] || "Untitled",
       type: attrs[:type] || :leaf,
+      target: attrs[:target] || :nixos,
       template_fn: attrs[:template_fn],
       subgraph_id: attrs[:subgraph_id],
       content: attrs[:content],

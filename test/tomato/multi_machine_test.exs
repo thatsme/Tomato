@@ -191,6 +191,74 @@ defmodule Tomato.MultiMachineTest do
     Graph.put_subgraph(graph, root)
   end
 
+  describe "shared fragment target filtering" do
+    test "shared :nixos fragment is excluded from Home Manager machines" do
+      graph = build_mixed_graph_with_shared_nixos()
+      graph = %{graph | backend: :flake}
+      output = Walker.walk(graph)
+
+      # The shared NixOS firewall must appear in the NixOS server
+      assert output =~ "networking.firewall.enable = true;"
+
+      # ...but exactly once — it must NOT appear in the HM laptop.
+      # split on the fragment: n occurrences => n+1 pieces.
+      occurrences = output |> String.split("networking.firewall.enable = true;") |> length()
+
+      assert occurrences == 2,
+             "expected shared :nixos fragment in exactly 1 machine, got #{occurrences - 1}"
+    end
+
+    test "shared :home_manager fragment is excluded from NixOS machines" do
+      graph = build_mixed_graph_with_shared_hm()
+      graph = %{graph | backend: :flake}
+      output = Walker.walk(graph)
+
+      # Shared HM-only fragment must appear in the HM laptop
+      assert output =~ "programs.direnv.enable = true;"
+
+      # ...but not in the NixOS server
+      occurrences = output |> String.split("programs.direnv.enable = true;") |> length()
+
+      assert occurrences == 2,
+             "expected shared :home_manager fragment in exactly 1 machine, got #{occurrences - 1}"
+    end
+
+    test "shared :all fragment appears in both NixOS and HM machines" do
+      graph = build_mixed_graph_with_shared_all()
+      graph = %{graph | backend: :flake}
+      output = Walker.walk(graph)
+
+      # Fragment tagged :all must appear in BOTH configs
+      occurrences = output |> String.split("universal.marker = true;") |> length()
+
+      assert occurrences == 3,
+             "expected :all fragment in both machines, got #{occurrences - 1}"
+    end
+  end
+
+  defp build_mixed_graph_with_shared_nixos do
+    add_shared_leaf(build_mixed_graph(), "Firewall", "networking.firewall.enable = true;", :nixos)
+  end
+
+  defp build_mixed_graph_with_shared_hm do
+    add_shared_leaf(build_mixed_graph(), "Direnv", "programs.direnv.enable = true;", :home_manager)
+  end
+
+  defp build_mixed_graph_with_shared_all do
+    add_shared_leaf(build_mixed_graph(), "Universal", "universal.marker = true;", :all)
+  end
+
+  defp add_shared_leaf(graph, name, content, target) do
+    root = Graph.root_subgraph(graph)
+    input = Subgraph.input_node(root)
+
+    shared = Node.new(type: :leaf, name: name, content: content, target: target)
+    root = Subgraph.add_node(root, shared)
+    root = Subgraph.add_edge(root, Edge.new(input.id, shared.id))
+
+    Graph.put_subgraph(graph, root)
+  end
+
   describe "Home Manager machines" do
     test "home_manager machine generates homeConfigurations" do
       graph = build_mixed_graph()

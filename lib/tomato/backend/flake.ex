@@ -82,27 +82,38 @@ defmodule Tomato.Backend.Flake do
   @doc """
   Generate a flake.nix with nixosConfigurations and/or homeConfigurations.
 
-  - `machine_configs` — list of {machine_meta, fragments} tuples
-  - `shared_fragments` — fragments from non-machine nodes at root level
+  - `machine_configs` — list of `{machine_meta, fragments}` tuples,
+    already filtered by the walker so each machine only receives
+    fragments compatible with its type
+  - `nixos_shared` — shared root-level fragments applicable to NixOS
+    machines (target `:nixos` or `:all`)
+  - `hm_shared` — shared root-level fragments applicable to Home
+    Manager machines (target `:home_manager` or `:all`)
   - `oodn` — global OODN map
   """
-  @spec finalize_multi(list({map(), list(String.t())}), list(String.t()), map()) :: String.t()
-  def finalize_multi(machine_configs, shared_fragments, oodn) do
+  @spec finalize_multi(
+          list({map(), list(String.t())}),
+          list(String.t()),
+          list(String.t()),
+          map()
+        ) :: String.t()
+  def finalize_multi(machine_configs, nixos_shared, hm_shared, oodn) do
     keymap = Map.get(oodn, "keymap", "us")
     inputs_nix = build_inputs(oodn)
     input_names = extract_input_names(oodn)
     follows_nix = build_follows(oodn)
     _has_hm = Enum.any?(input_names, &(&1 == "home-manager"))
 
-    shared_body = indent_fragments(shared_fragments, "          ")
+    nixos_shared_body = indent_fragments(nixos_shared, "          ")
+    hm_shared_body = indent_fragments(hm_shared, "          ")
 
     {nixos_machines, hm_machines} =
       Enum.split_with(machine_configs, fn {machine, _} ->
         Map.get(machine, :type, :nixos) == :nixos
       end)
 
-    nixos_nix = build_nixos_configs(nixos_machines, shared_body, keymap)
-    hm_nix = build_home_configs(hm_machines, shared_body)
+    nixos_nix = build_nixos_configs(nixos_machines, nixos_shared_body, keymap)
+    hm_nix = build_home_configs(hm_machines, hm_shared_body)
 
     sections =
       []

@@ -90,6 +90,74 @@ defmodule Tomato.Store.PersistenceTest do
     end
   end
 
+  describe "leaf target field" do
+    test "roundtrips :home_manager target" do
+      graph = Graph.new("hm-target")
+      sg = Graph.root_subgraph(graph)
+
+      {:ok, graph, _} =
+        Mutations.add_node(graph, sg.id,
+          type: :leaf,
+          name: "Zsh",
+          target: :home_manager,
+          content: "programs.zsh.enable = true;"
+        )
+
+      decoded = roundtrip(graph)
+      decoded_sg = Graph.get_subgraph(decoded, sg.id)
+      leaf = decoded_sg.nodes |> Map.values() |> Enum.find(&(&1.name == "Zsh"))
+
+      assert leaf.target == :home_manager
+    end
+
+    test "roundtrips :all target" do
+      graph = Graph.new("all-target")
+      sg = Graph.root_subgraph(graph)
+
+      {:ok, graph, _} =
+        Mutations.add_node(graph, sg.id, type: :leaf, name: "U", target: :all, content: "x = 1;")
+
+      decoded = roundtrip(graph)
+      decoded_sg = Graph.get_subgraph(decoded, sg.id)
+      leaf = decoded_sg.nodes |> Map.values() |> Enum.find(&(&1.name == "U"))
+
+      assert leaf.target == :all
+    end
+
+    test "legacy JSON without target field defaults to :nixos" do
+      # Simulate a graph saved before the target field existed: the node
+      # map has no "target" key at all.
+      json_map = %{
+        "id" => "g1",
+        "name" => "legacy",
+        "root_subgraph_id" => "sg1",
+        "subgraphs" => %{
+          "sg1" => %{
+            "id" => "sg1",
+            "name" => "root",
+            "floor" => 0,
+            "nodes" => %{
+              "n1" => %{
+                "id" => "n1",
+                "name" => "L",
+                "type" => "leaf",
+                "content" => "x = 1;"
+              }
+            },
+            "edges" => %{}
+          }
+        },
+        "oodn_registry" => %{}
+      }
+
+      decoded = Persistence.decode_graph(json_map)
+      sg = Graph.get_subgraph(decoded, "sg1")
+      leaf = Map.get(sg.nodes, "n1")
+
+      assert leaf.target == :nixos
+    end
+  end
+
   describe "peek_graph_name/1" do
     @tag :tmp_dir
     test "returns the encoded name for a valid graph file", %{tmp_dir: tmp} do

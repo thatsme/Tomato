@@ -84,6 +84,7 @@ defmodule Tomato.Store.Persistence do
          id: n["id"],
          name: n["name"],
          type: decode_node_type(n["type"]),
+         target: decode_target(n["target"]),
          template_fn: n["template_fn"],
          subgraph_id: n["subgraph_id"],
          content: n["content"],
@@ -97,6 +98,10 @@ defmodule Tomato.Store.Persistence do
        }}
     end)
   end
+
+  defp decode_target("home_manager"), do: :home_manager
+  defp decode_target("all"), do: :all
+  defp decode_target(_), do: :nixos
 
   defp decode_edges(map) do
     Map.new(map, fn {eid, e} ->
