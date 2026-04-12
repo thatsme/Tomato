@@ -51,6 +51,27 @@ defmodule TomatoWeb.GraphLive do
      |> assign(:deploy_output, reason)}
   end
 
+  def handle_info({:diff_result, {:ok, ""}}, socket) do
+    {:noreply,
+     socket
+     |> assign(:deploy_status, "success")
+     |> assign(:deploy_output, "No changes — local config matches the machine.")}
+  end
+
+  def handle_info({:diff_result, {:ok, diff}}, socket) do
+    {:noreply,
+     socket
+     |> assign(:deploy_status, "success")
+     |> assign(:deploy_output, "=== Diff (current vs new) ===\n\n" <> diff)}
+  end
+
+  def handle_info({:diff_result, {:error, reason}}, socket) do
+    {:noreply,
+     socket
+     |> assign(:deploy_status, "error")
+     |> assign(:deploy_output, "Diff failed: " <> reason)}
+  end
+
   def handle_info({:graph_updated, graph}, socket) do
     subgraph = Graph.get_subgraph(graph, socket.assigns.subgraph.id)
 
@@ -393,28 +414,62 @@ defmodule TomatoWeb.GraphLive do
      |> assign(:deploy_output, "")}
   end
 
-  def handle_event("reconfigure", _params, socket) do
+  def handle_event("reconfigure", params, socket) do
     nix_path = socket.assigns.generated_path
+    mode = parse_deploy_mode(params["mode"])
 
     if nix_path && File.exists?(nix_path) do
-      # Run deploy asynchronously
       pid = self()
 
       Task.Supervisor.start_child(Tomato.TaskSupervisor, fn ->
-        result = Tomato.Deploy.deploy(nix_path)
+        result = Tomato.Deploy.deploy(nix_path, %{mode: mode})
         send(pid, {:deploy_result, result})
       end)
 
       {:noreply,
        socket
        |> assign(:deploy_status, "running")
-       |> assign(:deploy_output, "Connecting to NixOS machine...")}
+       |> assign(:deploy_output, "Running nixos-rebuild #{mode}...")}
     else
       {:noreply,
        socket
        |> assign(:deploy_status, "error")
        |> assign(:deploy_output, "No .nix file generated yet. Click Generate first.")}
     end
+  end
+
+  def handle_event("show_diff", _params, socket) do
+    nix_path = socket.assigns.generated_path
+
+    if nix_path && File.exists?(nix_path) do
+      pid = self()
+
+      Task.Supervisor.start_child(Tomato.TaskSupervisor, fn ->
+        result = Tomato.Deploy.diff(nix_path)
+        send(pid, {:diff_result, result})
+      end)
+
+      {:noreply,
+       socket
+       |> assign(:deploy_status, "running")
+       |> assign(:deploy_output, "Fetching current config from machine...")}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("rollback", _params, socket) do
+    pid = self()
+
+    Task.Supervisor.start_child(Tomato.TaskSupervisor, fn ->
+      result = Tomato.Deploy.rollback()
+      send(pid, {:deploy_result, result})
+    end)
+
+    {:noreply,
+     socket
+     |> assign(:deploy_status, "running")
+     |> assign(:deploy_output, "Rolling back to previous generation...")}
   end
 
   def handle_event("test_connection", _params, socket) do
@@ -430,6 +485,11 @@ defmodule TomatoWeb.GraphLive do
      |> assign(:deploy_status, "running")
      |> assign(:deploy_output, "Testing SSH connection...")}
   end
+
+  defp parse_deploy_mode("test"), do: :test
+  defp parse_deploy_mode("dry_activate"), do: :dry_activate
+  defp parse_deploy_mode("build"), do: :build
+  defp parse_deploy_mode(_), do: :switch
 
   # --- Graph management ---
 
@@ -1424,17 +1484,70 @@ defmodule TomatoWeb.GraphLive do
           </div>
 
           <%!-- Fixed footer --%>
-          <div class="flex justify-end gap-2 p-4 border-t border-base-300 shrink-0">
+          <div class="flex flex-wrap justify-end gap-2 p-4 border-t border-base-300 shrink-0">
             <button type="button" class="btn btn-sm btn-ghost" phx-click="close_generated">
               Close
             </button>
             <button
               type="button"
+              class={[
+                "btn btn-sm btn-outline btn-error",
+                @deploy_status == "running" && "btn-disabled"
+              ]}
+              phx-click="rollback"
+              disabled={@deploy_status == "running"}
+              data-confirm="Rollback to previous generation?"
+              title="nixos-rebuild switch --rollback"
+            >
+              Rollback
+            </button>
+            <button
+              type="button"
+              class={[
+                "btn btn-sm btn-outline btn-info",
+                @deploy_status == "running" && "btn-disabled"
+              ]}
+              phx-click="show_diff"
+              disabled={@deploy_status == "running"}
+              title="Show diff against current config on machine"
+            >
+              Diff
+            </button>
+            <button
+              type="button"
+              class={[
+                "btn btn-sm btn-outline btn-secondary",
+                @deploy_status == "running" && "btn-disabled"
+              ]}
+              phx-click="reconfigure"
+              phx-value-mode="dry_activate"
+              disabled={@deploy_status == "running"}
+              title="nixos-rebuild dry-activate — show what would change"
+            >
+              Dry Run
+            </button>
+            <button
+              type="button"
+              class={[
+                "btn btn-sm btn-secondary",
+                @deploy_status == "running" && "btn-disabled loading"
+              ]}
+              phx-click="reconfigure"
+              phx-value-mode="test"
+              disabled={@deploy_status == "running"}
+              title="nixos-rebuild test — apply without boot entry"
+            >
+              Test
+            </button>
+            <button
+              type="button"
               class={["btn btn-sm btn-warning", @deploy_status == "running" && "btn-disabled loading"]}
               phx-click="reconfigure"
+              phx-value-mode="switch"
               disabled={@deploy_status == "running"}
+              title="nixos-rebuild switch — apply and add to boot menu"
             >
-              Reconfigure NixOS
+              Switch
             </button>
           </div>
         </div>
