@@ -771,7 +771,7 @@ defmodule TomatoWeb.GraphLive do
         <div class="p-3 border-b border-base-300">
           <div class="flex items-center gap-2">
             <span class="text-lg font-bold text-primary">Tomato</span>
-            <span class="text-xs text-base-content/40">v0.2</span>
+            <span class="text-xs text-base-content/40">v0.3</span>
           </div>
           <div class="flex items-center gap-1 mt-2">
             <button
