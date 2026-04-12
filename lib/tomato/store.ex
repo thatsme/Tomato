@@ -185,7 +185,6 @@ defmodule Tomato.Store do
       spawn(fn ->
         Process.sleep(100)
         Tomato.Demo.seed()
-        # Wait for the debounced flush to complete before switching graphs
         Process.sleep(400)
 
         multi_path = Path.join(state.graphs_dir, "multi-machine.json")
@@ -193,9 +192,17 @@ defmodule Tomato.Store do
         unless File.exists?(multi_path) do
           Tomato.Demo.seed_multi()
           Process.sleep(400)
-          # Switch back to default for the active session
-          Tomato.Store.load_graph("default.json")
         end
+
+        home_path = Path.join(state.graphs_dir, "home-manager.json")
+
+        unless File.exists?(home_path) do
+          Tomato.Demo.seed_home()
+          Process.sleep(400)
+        end
+
+        # Switch back to default for the active session
+        Tomato.Store.load_graph("default.json")
       end)
     end
 

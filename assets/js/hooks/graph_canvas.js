@@ -258,7 +258,7 @@ const GraphCanvas = {
 
     if (nodeType === "oodn") {
       this.pushEvent("select_oodn", {});
-    } else if (nodeType === "gateway") {
+    } else if (nodeType === "gateway" || nodeType === "machine") {
       this.pushEvent("enter_gateway", { "node-id": nodeId });
     } else if (nodeType === "leaf") {
       this.pushEvent("edit_node_content", { "node-id": nodeId });
@@ -297,7 +297,7 @@ const GraphCanvas = {
       items.push({ label: "Edit content", icon: "pencil", event: "edit_node_content", params: { "node-id": nodeId } });
     }
 
-    if (nodeType === "gateway") {
+    if (nodeType === "gateway" || nodeType === "machine") {
       items.push({ label: "Enter subgraph", icon: "arrow-down", event: "enter_gateway", params: { "node-id": nodeId } });
     }
 

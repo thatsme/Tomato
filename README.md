@@ -13,12 +13,36 @@ mix setup
 mix phx.server
 ```
 
-Open [localhost:4001](http://localhost:4001). Two demo graphs load automatically:
+Open [localhost:4001](http://localhost:4001). Three demo graphs load automatically — switch between them via the Graph Manager (click the filename in the sidebar).
 
-- **default.json** — single machine with Networking, Firewall, System, and a Services gateway containing PostgreSQL and Nginx
-- **multi-machine.json** — three machines (webserver, dbserver, laptop) with shared firewall, ready for flake deployment
+### Example 1 — `default.json` (simple traditional NixOS)
 
-Switch between them via the Graph Manager (click the filename in the sidebar).
+A single-machine traditional `configuration.nix` example. Good first walkthrough.
+
+- **Root floor**: Networking → System → Services (gateway), with Firewall in parallel
+- **Services subgraph**: PostgreSQL + Nginx
+- **OODNs**: `hostname`, `timezone`, `locale`, `keymap`, `nginx_port`, `pg_port`
+- **Backend**: Traditional (`configuration.nix`)
+
+### Example 2 — `multi-machine.json` (flake with multiple servers)
+
+A flake-based multi-machine setup showing per-machine OODN override and shared config.
+
+- **Root floor**: shared Firewall + 3 machines
+- **webserver** (NixOS, x86_64-linux): Nginx
+- **dbserver** (NixOS, aarch64-linux): PostgreSQL
+- **laptop** (Home Manager, aarch64-darwin): Git + Zsh
+- **OODNs**: `input_nixpkgs`, `input_home-manager`, `input_home-manager_follows`
+- **Backend**: Flake (`flake.nix` with mixed `nixosConfigurations` + `homeConfigurations`)
+
+### Example 3 — `home-manager.json` (pure Home Manager dotfiles)
+
+A developer dotfiles example — no NixOS server, just user-level configuration.
+
+- **One Home Manager machine**: laptop (aarch64-darwin, user "alex")
+- **Inside**: Git, Zsh + Starship, Neovim, Tmux, Alacritty, User Packages
+- **OODNs**: `username`, `git_name`, `git_email`, flake inputs
+- **Backend**: Flake (`flake.nix` with `homeConfigurations."alex@laptop"`)
 
 ## What's New in v0.2
 

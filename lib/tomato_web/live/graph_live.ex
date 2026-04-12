@@ -1533,7 +1533,6 @@ defmodule TomatoWeb.GraphLive do
       data-node-type="oodn"
       data-node-name="Config"
       transform={"translate(#{@position.x}, #{@position.y})"}
-      phx-click="select_oodn"
     >
       <%!-- Shadow --%>
       <rect x="2" y="2" width={@width} height={@height} rx="6" fill="black" opacity="0.08" />

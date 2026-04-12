@@ -277,4 +277,171 @@ defmodule Tomato.Demo do
 
     :ok
   end
+
+  @doc """
+  Seed a pure Home Manager demo graph — developer dotfiles via flake.
+  Creates a new graph file 'home-manager.json' with Git, Zsh, Neovim, Tmux,
+  Alacritty and user packages.
+  """
+  @spec seed_home() :: :ok
+  def seed_home do
+    {:ok, _graph, _filename} = Store.new_graph("home-manager")
+    Store.set_backend(:flake)
+
+    # --- Global OODNs ---
+    Store.put_oodn("username", "alex")
+    Store.put_oodn("git_name", "Alex Doe")
+    Store.put_oodn("git_email", "alex@example.com")
+    Store.put_oodn("state_version", "24.11")
+
+    # --- Flake inputs ---
+    Store.put_oodn("input_nixpkgs", "github:nixos/nixpkgs?ref=nixos-unstable")
+    Store.put_oodn("input_home-manager", "github:nix-community/home-manager")
+    Store.put_oodn("input_home-manager_follows", "nixpkgs")
+
+    graph = Store.get_graph()
+    root_sg = Tomato.Graph.root_subgraph(graph)
+
+    # --- Single Home Manager machine: laptop ---
+    {:ok, machine, m_sg} =
+      Store.add_machine(root_sg.id,
+        hostname: "laptop",
+        system: "aarch64-darwin",
+        state_version: "24.11",
+        type: :home_manager,
+        username: "alex",
+        position: %{x: 300, y: 250}
+      )
+
+    # --- User config nodes ---
+    {:ok, git_node} =
+      Store.add_node(m_sg.id,
+        type: :leaf,
+        name: "Git",
+        position: %{x: 150, y: 180},
+        content: ~S"""
+        programs.git = {
+          enable = true;
+          userName = "${git_name}";
+          userEmail = "${git_email}";
+          extraConfig = {
+            init.defaultBranch = "main";
+            pull.rebase = true;
+          };
+        };
+        """
+      )
+
+    {:ok, zsh_node} =
+      Store.add_node(m_sg.id,
+        type: :leaf,
+        name: "Zsh + Starship",
+        position: %{x: 350, y: 180},
+        content: """
+        programs.zsh = {
+          enable = true;
+          enableCompletion = true;
+          autosuggestion.enable = true;
+          syntaxHighlighting.enable = true;
+          oh-my-zsh = {
+            enable = true;
+            plugins = [ "git" "docker" "z" ];
+            theme = "robbyrussell";
+          };
+        };
+
+        programs.starship = {
+          enable = true;
+          enableZshIntegration = true;
+        };
+        """
+      )
+
+    {:ok, nvim_node} =
+      Store.add_node(m_sg.id,
+        type: :leaf,
+        name: "Neovim",
+        position: %{x: 550, y: 180},
+        content: """
+        programs.neovim = {
+          enable = true;
+          defaultEditor = true;
+          viAlias = true;
+          vimAlias = true;
+        };
+        """
+      )
+
+    {:ok, tmux_node} =
+      Store.add_node(m_sg.id,
+        type: :leaf,
+        name: "Tmux",
+        position: %{x: 150, y: 320},
+        content: """
+        programs.tmux = {
+          enable = true;
+          clock24 = true;
+          terminal = "screen-256color";
+          keyMode = "vi";
+          shortcut = "a";
+        };
+        """
+      )
+
+    {:ok, alacritty_node} =
+      Store.add_node(m_sg.id,
+        type: :leaf,
+        name: "Alacritty",
+        position: %{x: 350, y: 320},
+        content: """
+        programs.alacritty = {
+          enable = true;
+          settings = {
+            font.size = 14;
+            window.opacity = 0.95;
+            window.padding = { x = 10; y = 10; };
+          };
+        };
+        """
+      )
+
+    {:ok, pkgs_node} =
+      Store.add_node(m_sg.id,
+        type: :leaf,
+        name: "User Packages",
+        position: %{x: 550, y: 320},
+        content: """
+        home.packages = with pkgs; [
+          ripgrep
+          fd
+          jq
+          htop
+          bat
+          eza
+          fzf
+          direnv
+          gh
+        ];
+        """
+      )
+
+    # Wire all leaves: input -> each leaf -> output
+    m_sg_full = Store.get_subgraph(m_sg.id)
+    m_in = Tomato.Subgraph.input_node(m_sg_full)
+    m_out = Tomato.Subgraph.output_node(m_sg_full)
+
+    for leaf <- [git_node, zsh_node, nvim_node, tmux_node, alacritty_node, pkgs_node] do
+      Store.add_edge(m_sg.id, m_in.id, leaf.id)
+      Store.add_edge(m_sg.id, leaf.id, m_out.id)
+    end
+
+    # Wire root: input -> machine -> output
+    updated_root = Store.get_subgraph(root_sg.id)
+    input = Tomato.Subgraph.input_node(updated_root)
+    output = Tomato.Subgraph.output_node(updated_root)
+    Store.add_edge(root_sg.id, input.id, machine.id)
+    Store.add_edge(root_sg.id, machine.id, output.id)
+
+    :ok
+  end
 end
