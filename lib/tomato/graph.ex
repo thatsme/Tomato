@@ -6,6 +6,7 @@ defmodule Tomato.Graph do
 
   alias Tomato.{Subgraph, OODN}
 
+  @type backend :: :traditional | :flake
   @type t :: %__MODULE__{
           id: String.t(),
           name: String.t(),
@@ -14,7 +15,8 @@ defmodule Tomato.Graph do
           updated_at: String.t(),
           oodn_registry: %{String.t() => OODN.t()},
           subgraphs: %{String.t() => Subgraph.t()},
-          root_subgraph_id: String.t()
+          root_subgraph_id: String.t(),
+          backend: backend()
         }
 
   @derive Jason.Encoder
@@ -28,7 +30,8 @@ defmodule Tomato.Graph do
     :root_subgraph_id,
     oodn_registry: %{},
     oodn_position: %{x: 600, y: 80},
-    subgraphs: %{}
+    subgraphs: %{},
+    backend: :traditional
   ]
 
   @spec new(String.t()) :: t()

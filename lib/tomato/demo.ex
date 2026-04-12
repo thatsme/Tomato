@@ -21,6 +21,11 @@ defmodule Tomato.Demo do
     Store.put_oodn("nginx_port", "80")
     Store.put_oodn("pg_port", "5432")
 
+    # --- Flake inputs (used when backend is :flake) ---
+    Store.put_oodn("input_nixpkgs", "github:nixos/nixpkgs?ref=nixos-unstable")
+    Store.put_oodn("input_home-manager", "github:nix-community/home-manager")
+    Store.put_oodn("input_home-manager_follows", "nixpkgs")
+
     # --- Leaf nodes using ${oodn_key} references ---
     {:ok, n1} =
       Store.add_node(root_sg.id,

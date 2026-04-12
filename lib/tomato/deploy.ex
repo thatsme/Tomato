@@ -14,11 +14,13 @@ defmodule Tomato.Deploy do
   @spec deploy(String.t(), map()) :: {:ok, String.t()} | {:error, String.t()}
   def deploy(nix_file_path, opts \\ %{}) do
     opts = merge_config(opts)
+    is_flake = String.ends_with?(nix_file_path, "flake.nix")
+    remote_path = if is_flake, do: "/etc/nixos/flake.nix", else: opts.remote_path
 
     with {:ok, content} <- File.read(nix_file_path),
          {:ok, conn} <- connect(opts),
-         :ok <- upload(conn, content, opts.remote_path),
-         {:ok, output} <- apply_config(conn),
+         :ok <- upload(conn, content, remote_path),
+         {:ok, output} <- apply_config(conn, is_flake),
          :ok <- disconnect(conn) do
       {:ok, output}
     else
@@ -116,7 +118,26 @@ defmodule Tomato.Deploy do
     end
   end
 
-  defp apply_config(conn) do
+  defp apply_config(conn, true) do
+    Logger.info("Running nixos-rebuild switch --flake...")
+
+    command = """
+    echo "==> Uploaded flake.nix"
+    head -5 /etc/nixos/flake.nix
+    echo "..."
+    echo ""
+    echo "==> Running nixos-rebuild switch --flake..."
+    cd /etc/nixos && nixos-rebuild switch --flake .#$(hostname) 2>&1
+    echo ""
+    echo "==> Done"
+    echo "Host: $(hostname)"
+    echo "Date: $(date)"
+    """
+
+    exec(conn, command)
+  end
+
+  defp apply_config(conn, false) do
     Logger.info("Running nixos-rebuild switch...")
 
     command = """

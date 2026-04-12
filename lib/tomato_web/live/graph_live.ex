@@ -312,6 +312,14 @@ defmodule TomatoWeb.GraphLive do
     {:noreply, assign(socket, :editing_content_node_id, nil)}
   end
 
+  # --- Backend toggle ---
+
+  def handle_event("toggle_backend", _params, socket) do
+    new_backend = if socket.assigns.graph.backend == :flake, do: :traditional, else: :flake
+    Store.set_backend(new_backend)
+    {:noreply, socket}
+  end
+
   # --- Generate ---
 
   def handle_event("generate", _params, socket) do
@@ -321,7 +329,13 @@ defmodule TomatoWeb.GraphLive do
     # Write .nix file to disk
     generated_dir = Path.expand("priv/generated", File.cwd!())
     File.mkdir_p!(generated_dir)
-    filename = Tomato.Store.slugify(graph.name) <> ".nix"
+
+    filename =
+      case graph.backend do
+        :flake -> "flake.nix"
+        _ -> Tomato.Store.slugify(graph.name) <> ".nix"
+      end
+
     nix_path = Path.join(generated_dir, filename)
     File.write!(nix_path, output)
 
@@ -561,6 +575,17 @@ defmodule TomatoWeb.GraphLive do
               title="Open / New / Save As"
             >
               {@current_file || "unsaved"}
+            </button>
+            <button
+              class={[
+                "btn btn-xs",
+                @graph.backend == :flake && "btn-info",
+                @graph.backend != :flake && "btn-ghost"
+              ]}
+              phx-click="toggle_backend"
+              title="Switch between Traditional and Flake output"
+            >
+              {if @graph.backend == :flake, do: "Flake", else: "Traditional"}
             </button>
             <button class="btn btn-xs btn-accent" phx-click="generate">
               Generate
@@ -1216,7 +1241,7 @@ defmodule TomatoWeb.GraphLive do
         <div class="relative bg-base-100 rounded-lg shadow-2xl w-[800px] max-h-[85vh] flex flex-col">
           <div class="flex items-center justify-between p-4 border-b border-base-300 shrink-0">
             <div>
-              <h2 class="font-semibold">Generated configuration.nix</h2>
+              <h2 class="font-semibold">Generated Output</h2>
               <p :if={@path} class="text-xs text-success">Saved to: {@path}</p>
             </div>
             <button class="btn btn-sm btn-ghost" phx-click="close_generated">X</button>

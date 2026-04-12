@@ -12,9 +12,17 @@ defmodule Tomato.Walker do
 
   @doc """
   Walk the entire graph starting from the root subgraph.
-  Returns the generated configuration.nix string.
+  Dispatches to the appropriate backend based on graph.backend.
+  Returns the generated .nix string.
   """
   @spec walk(Graph.t()) :: String.t()
+  def walk(%Graph{backend: :flake} = graph) do
+    oodn = build_oodn_map(graph)
+    root = Graph.root_subgraph(graph)
+    fragments = walk_subgraph(root, graph, oodn)
+    Tomato.Backend.Flake.finalize(fragments, oodn)
+  end
+
   def walk(%Graph{} = graph) do
     oodn = build_oodn_map(graph)
     root = Graph.root_subgraph(graph)

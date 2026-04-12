@@ -119,6 +119,12 @@ defmodule Tomato.Store do
     GenServer.call(server, {:move_oodn, position})
   end
 
+  @doc "Set the graph backend (:traditional or :flake)."
+  @spec set_backend(server(), Graph.backend()) :: :ok
+  def set_backend(server \\ __MODULE__, backend) when backend in [:traditional, :flake] do
+    GenServer.call(server, {:set_backend, backend})
+  end
+
   @doc "Returns the current file name."
   @spec current_file(server()) :: String.t() | nil
   def current_file(server \\ __MODULE__) do
@@ -377,6 +383,13 @@ defmodule Tomato.Store do
     end
   end
 
+  def handle_call({:set_backend, backend}, _from, state) do
+    graph = %{state.graph | backend: backend}
+    state = schedule_flush(%{state | graph: graph})
+    broadcast(graph)
+    {:reply, :ok, state}
+  end
+
   def handle_call({:move_oodn, position}, _from, state) do
     graph = %{state.graph | oodn_position: position}
     state = schedule_flush(%{state | graph: graph})
@@ -514,9 +527,13 @@ defmodule Tomato.Store do
       root_subgraph_id: json_map["root_subgraph_id"],
       subgraphs: subgraphs,
       oodn_registry: oodn,
-      oodn_position: decode_position(json_map["oodn_position"])
+      oodn_position: decode_position(json_map["oodn_position"]),
+      backend: decode_backend(json_map["backend"])
     }
   end
+
+  defp decode_backend("flake"), do: :flake
+  defp decode_backend(_), do: :traditional
 
   defp decode_position(nil), do: %{x: 600, y: 80}
   defp decode_position(%{"x" => x, "y" => y}), do: %{x: x, y: y}
