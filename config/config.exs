@@ -11,12 +11,16 @@ config :tomato,
   generators: [timestamp_type: :utc_datetime]
 
 # NixOS deploy target — override in config/deploy.secret.exs or env vars
-# See README.md for setup instructions
+# See README.md for setup instructions.
+#
+# Auth: set TOMATO_DEPLOY_IDENTITY_FILE to use SSH key auth (recommended).
+# TOMATO_DEPLOY_PASSWORD is the legacy lab-only fallback.
 config :tomato, Tomato.Deploy,
   host: System.get_env("TOMATO_DEPLOY_HOST", "localhost"),
   port: String.to_integer(System.get_env("TOMATO_DEPLOY_PORT", "22")),
   user: System.get_env("TOMATO_DEPLOY_USER", "root"),
-  password: System.get_env("TOMATO_DEPLOY_PASSWORD")
+  password: System.get_env("TOMATO_DEPLOY_PASSWORD"),
+  identity_file: System.get_env("TOMATO_DEPLOY_IDENTITY_FILE")
 
 # Configure the endpoint
 config :tomato, TomatoWeb.Endpoint,
