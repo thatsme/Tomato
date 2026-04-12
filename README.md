@@ -13,7 +13,7 @@ mix setup
 mix phx.server
 ```
 
-Open [localhost:4000](http://localhost:4000). A demo graph loads automatically with Networking, Firewall, System, and a Services gateway containing PostgreSQL and Nginx.
+Open [localhost:4001](http://localhost:4001). A demo graph loads automatically with Networking, Firewall, System, and a Services gateway containing PostgreSQL and Nginx.
 
 ## How It Works
 
@@ -144,7 +144,7 @@ Enforced on every mutation: no cycles (Kahn's algorithm), single `:input`/`:outp
 ```bash
 mix deps.get            # install dependencies
 mix compile             # compile
-mix phx.server          # start dev server at localhost:4000
+mix phx.server          # start dev server at localhost:4001
 iex -S mix phx.server   # start with interactive shell
 mix test                # run tests
 mix format              # format code
