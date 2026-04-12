@@ -167,22 +167,27 @@ defmodule Tomato.Store do
   def handle_continue(:maybe_seed, %State{} = state) do
     root = Graph.root_subgraph(state.graph)
 
-    if map_size(root.nodes) <= 2 do
+    default_empty = map_size(root.nodes) <= 2
+    multi_path = Path.join(state.graphs_dir, "multi-machine.json")
+    home_path = Path.join(state.graphs_dir, "home-manager.json")
+    needs_multi = not File.exists?(multi_path)
+    needs_home = not File.exists?(home_path)
+
+    if default_empty or needs_multi or needs_home do
       spawn(fn ->
         Process.sleep(100)
-        Tomato.Demo.seed()
-        Process.sleep(400)
 
-        multi_path = Path.join(state.graphs_dir, "multi-machine.json")
+        if default_empty do
+          Tomato.Demo.seed()
+          Process.sleep(400)
+        end
 
-        unless File.exists?(multi_path) do
+        if needs_multi do
           Tomato.Demo.seed_multi()
           Process.sleep(400)
         end
 
-        home_path = Path.join(state.graphs_dir, "home-manager.json")
-
-        unless File.exists?(home_path) do
+        if needs_home do
           Tomato.Demo.seed_home()
           Process.sleep(400)
         end
