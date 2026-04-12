@@ -35,7 +35,12 @@ defmodule Tomato.Walker do
       fragments = filter_by_target(tagged, :nixos)
       Tomato.Backend.Flake.finalize(fragments, oodn)
     else
-      # Multi-machine — generate per-machine configs
+      # Multi-machine — generate per-machine configs. In-machine leaves
+      # are already scoped to their machine by the gateway structure, so
+      # we strip their target tags without filtering; the user explicitly
+      # placed them there. The target filter only applies to SHARED
+      # root-level content, where the same leaf fans out to every machine
+      # and we need to filter by each machine's type.
       machine_configs =
         Enum.map(machines, fn machine_node ->
           machine_oodn =
@@ -47,14 +52,11 @@ defmodule Tomato.Walker do
 
           child_sg = Graph.get_subgraph(graph, machine_node.subgraph_id)
           tagged = if child_sg, do: walk_subgraph(child_sg, graph, machine_oodn), else: []
-
-          machine_type = Map.get(machine_node.machine, :type, :nixos)
-          fragments = filter_by_target(tagged, machine_type)
+          fragments = Enum.map(tagged, fn {_target, frag} -> frag end)
           {machine_node.machine, fragments}
         end)
 
-      # Shared root-level fragments split by target: NixOS machines only
-      # receive :nixos/:all leaves, HM machines only receive :home_manager/:all.
+      # Shared root-level fragments split by target.
       shared_tagged = walk_shared(root, graph, oodn)
       nixos_shared = filter_by_target(shared_tagged, :nixos)
       hm_shared = filter_by_target(shared_tagged, :home_manager)

@@ -234,6 +234,22 @@ defmodule Tomato.MultiMachineTest do
       assert occurrences == 3,
              "expected :all fragment in both machines, got #{occurrences - 1}"
     end
+
+    test "in-machine leaves are preserved regardless of target" do
+      # The default leaf target is :nixos, but content the user explicitly
+      # places inside a Home Manager machine gateway must still appear in
+      # that machine's config — the gateway structure is the scope, not
+      # the leaf's target tag. Filtering in-machine content by target
+      # would strip the Git leaf out of build_mixed_graph/0's HM machine.
+      graph = build_mixed_graph()
+      graph = %{graph | backend: :flake}
+      output = Walker.walk(graph)
+
+      # Git leaf is inside the HM macbook gateway; must appear in output.
+      assert output =~ "programs.git.enable = true;"
+      # SSH leaf is inside the NixOS server gateway; must appear too.
+      assert output =~ "services.openssh.enable = true;"
+    end
   end
 
   defp build_mixed_graph_with_shared_nixos do
