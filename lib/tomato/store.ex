@@ -398,7 +398,9 @@ defmodule Tomato.Store do
       machine_meta = %{
         hostname: hostname,
         system: attrs[:system] || "aarch64-linux",
-        state_version: attrs[:state_version] || "24.11"
+        state_version: attrs[:state_version] || "24.11",
+        type: attrs[:type] || :nixos,
+        username: attrs[:username] || "user"
       }
 
       machine_node =
@@ -577,13 +579,20 @@ defmodule Tomato.Store do
 
   defp decode_machine(nil), do: nil
 
-  defp decode_machine(%{"hostname" => h, "system" => s, "state_version" => sv}),
-    do: %{hostname: h, system: s, state_version: sv}
-
-  defp decode_machine(%{"hostname" => h}),
-    do: %{hostname: h, system: "aarch64-linux", state_version: "24.11"}
+  defp decode_machine(%{"hostname" => h} = m) do
+    %{
+      hostname: h,
+      system: m["system"] || "aarch64-linux",
+      state_version: m["state_version"] || "24.11",
+      type: decode_machine_type(m["type"]),
+      username: m["username"] || "user"
+    }
+  end
 
   defp decode_machine(_), do: nil
+
+  defp decode_machine_type("home_manager"), do: :home_manager
+  defp decode_machine_type(_), do: :nixos
 
   defp decode_backend("flake"), do: :flake
   defp decode_backend(_), do: :traditional

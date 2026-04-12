@@ -472,6 +472,132 @@ defmodule Tomato.TemplateLibrary do
           """
         }
       ]
+    },
+
+    # --- Home Manager ---
+    %{
+      id: "hm-git",
+      name: "Git",
+      category: "Home Manager",
+      description: "Git configuration with user name and email",
+      oodn_keys: ["username"],
+      content: ~S"""
+      programs.git = {
+        enable = true;
+        userName = "${username}";
+        userEmail = "${username}@localhost";
+      };
+      """
+    },
+    %{
+      id: "hm-zsh",
+      name: "Zsh",
+      category: "Home Manager",
+      description: "Zsh shell with oh-my-zsh and plugins",
+      oodn_keys: [],
+      content: """
+      programs.zsh = {
+        enable = true;
+        enableCompletion = true;
+        autosuggestion.enable = true;
+        syntaxHighlighting.enable = true;
+        oh-my-zsh = {
+          enable = true;
+          plugins = [ "git" "docker" "tmux" ];
+          theme = "robbyrussell";
+        };
+      };
+      """
+    },
+    %{
+      id: "hm-neovim",
+      name: "Neovim",
+      category: "Home Manager",
+      description: "Neovim with basic plugins",
+      oodn_keys: [],
+      content: """
+      programs.neovim = {
+        enable = true;
+        defaultEditor = true;
+        viAlias = true;
+        vimAlias = true;
+      };
+      """
+    },
+    %{
+      id: "hm-tmux",
+      name: "Tmux",
+      category: "Home Manager",
+      description: "Tmux terminal multiplexer",
+      oodn_keys: [],
+      content: """
+      programs.tmux = {
+        enable = true;
+        clock24 = true;
+        terminal = "screen-256color";
+        keyMode = "vi";
+      };
+      """
+    },
+    %{
+      id: "hm-starship",
+      name: "Starship Prompt",
+      category: "Home Manager",
+      description: "Cross-shell prompt with Starship",
+      oodn_keys: [],
+      content: """
+      programs.starship = {
+        enable = true;
+        enableZshIntegration = true;
+      };
+      """
+    },
+    %{
+      id: "hm-direnv",
+      name: "Direnv",
+      category: "Home Manager",
+      description: "Per-directory environments with nix-direnv",
+      oodn_keys: [],
+      content: """
+      programs.direnv = {
+        enable = true;
+        nix-direnv.enable = true;
+      };
+      """
+    },
+    %{
+      id: "hm-alacritty",
+      name: "Alacritty",
+      category: "Home Manager",
+      description: "GPU-accelerated terminal emulator",
+      oodn_keys: [],
+      content: """
+      programs.alacritty = {
+        enable = true;
+        settings = {
+          font.size = 14;
+          window.opacity = 0.95;
+        };
+      };
+      """
+    },
+    %{
+      id: "hm-packages",
+      name: "User Packages",
+      category: "Home Manager",
+      description: "User-level packages",
+      oodn_keys: [],
+      content: """
+      home.packages = with pkgs; [
+        ripgrep
+        fd
+        jq
+        htop
+        bat
+        eza
+        fzf
+      ];
+      """
     }
   ]
 
@@ -492,7 +618,8 @@ defmodule Tomato.TemplateLibrary do
         "Database" -> 3
         "Services" -> 4
         "Monitoring" -> 5
-        "Packages" -> 6
+        "Home Manager" -> 6
+        "Packages" -> 7
         _ -> 99
       end
     end)

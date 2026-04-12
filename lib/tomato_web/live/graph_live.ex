@@ -333,10 +333,14 @@ defmodule TomatoWeb.GraphLive do
   def handle_event("update_machine", params, socket) do
     node_id = params["node-id"]
 
+    machine_type = if params["type"] == "home_manager", do: :home_manager, else: :nixos
+
     machine = %{
       hostname: params["hostname"],
       system: params["system"],
-      state_version: params["state_version"]
+      state_version: params["state_version"],
+      type: machine_type,
+      username: params["username"] || "user"
     }
 
     Store.update_node(socket.assigns.subgraph.id, node_id,
@@ -714,11 +718,34 @@ defmodule TomatoWeb.GraphLive do
             <div :if={Tomato.Node.machine?(node)} class="space-y-1">
               <form phx-submit="update_machine" phx-value-node-id={node.id}>
                 <div class="flex gap-1 items-center">
+                  <label class="text-xs text-base-content/60 w-16">Type</label>
+                  <select name="type" class="select select-xs select-bordered flex-1 font-mono">
+                    <option value="nixos" selected={Map.get(node.machine, :type, :nixos) == :nixos}>
+                      NixOS
+                    </option>
+                    <option
+                      value="home_manager"
+                      selected={Map.get(node.machine, :type) == :home_manager}
+                    >
+                      Home Manager
+                    </option>
+                  </select>
+                </div>
+                <div class="flex gap-1 items-center mt-1">
                   <label class="text-xs text-base-content/60 w-16">Host</label>
                   <input
                     type="text"
                     name="hostname"
                     value={node.machine.hostname}
+                    class="input input-xs input-bordered flex-1 font-mono"
+                  />
+                </div>
+                <div class="flex gap-1 items-center mt-1">
+                  <label class="text-xs text-base-content/60 w-16">User</label>
+                  <input
+                    type="text"
+                    name="username"
+                    value={Map.get(node.machine, :username, "user")}
                     class="input input-xs input-bordered flex-1 font-mono"
                   />
                 </div>
@@ -731,6 +758,9 @@ defmodule TomatoWeb.GraphLive do
                     <option value="x86_64-linux" selected={node.machine.system == "x86_64-linux"}>
                       x86_64-linux
                     </option>
+                    <option value="aarch64-darwin" selected={node.machine.system == "aarch64-darwin"}>
+                      aarch64-darwin
+                    </option>
                   </select>
                 </div>
                 <div class="flex gap-1 items-center mt-1">
@@ -742,9 +772,7 @@ defmodule TomatoWeb.GraphLive do
                     class="input input-xs input-bordered flex-1 font-mono"
                   />
                 </div>
-                <button type="submit" class="btn btn-xs btn-warning mt-1 w-full">
-                  Update Machine
-                </button>
+                <button type="submit" class="btn btn-xs btn-warning mt-1 w-full">Update</button>
               </form>
             </div>
             <div class="flex flex-wrap gap-2">

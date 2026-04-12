@@ -34,6 +34,7 @@ defmodule Tomato.Walker do
             |> Map.put("hostname", machine_node.machine.hostname)
             |> Map.put("system_arch", machine_node.machine.system)
             |> Map.put("state_version", machine_node.machine.state_version)
+            |> Map.put("username", Map.get(machine_node.machine, :username, "user"))
 
           child_sg = Graph.get_subgraph(graph, machine_node.subgraph_id)
           fragments = if child_sg, do: walk_subgraph(child_sg, graph, machine_oodn), else: []
@@ -133,6 +134,7 @@ defmodule Tomato.Walker do
         "state_version",
         Map.get(machine, :state_version, Map.get(oodn, "state_version", "24.11"))
       )
+      |> Map.put("username", Map.get(machine, :username, Map.get(oodn, "username", "user")))
 
     case Graph.get_subgraph(graph, sg_id) do
       nil -> []

@@ -79,7 +79,7 @@ defmodule Tomato.Backend.Flake do
   end
 
   @doc """
-  Generate a flake.nix with multiple nixosConfigurations.
+  Generate a flake.nix with nixosConfigurations and/or homeConfigurations.
 
   - `machine_configs` — list of {machine_meta, fragments} tuples
   - `shared_fragments` — fragments from non-machine nodes at root level
@@ -91,45 +91,22 @@ defmodule Tomato.Backend.Flake do
     inputs_nix = build_inputs(oodn)
     input_names = extract_input_names(oodn)
     follows_nix = build_follows(oodn)
+    _has_hm = Enum.any?(input_names, &(&1 == "home-manager"))
 
     shared_body = indent_fragments(shared_fragments, "          ")
 
-    machines_nix =
-      machine_configs
-      |> Enum.map(fn {machine, fragments} ->
-        hostname = Map.get(machine, :hostname, "nixos")
-        system = Map.get(machine, :system, "aarch64-linux")
-        sv = Map.get(machine, :state_version, "24.11")
-        body = indent_fragments(fragments, "          ")
-
-        """
-            "#{hostname}" = nixpkgs.lib.nixosSystem {
-              system = "#{system}";
-              modules = [
-                ({ config, pkgs, lib, ... }: {
-                  console.keyMap = "#{keymap}";
-                  networking.hostName = "#{hostname}";
-
-                  services.openssh = {
-                    enable = true;
-                    settings = {
-                      PermitRootLogin = "yes";
-                      PasswordAuthentication = true;
-                    };
-                  };
-
-                  networking.useDHCP = lib.mkDefault true;
-                  system.stateVersion = "#{sv}";
-
-        #{shared_body}
-
-        #{body}
-                })
-              ];
-            };
-        """
-        |> String.trim_trailing()
+    {nixos_machines, hm_machines} =
+      Enum.split_with(machine_configs, fn {machine, _} ->
+        Map.get(machine, :type, :nixos) == :nixos
       end)
+
+    nixos_nix = build_nixos_configs(nixos_machines, shared_body, keymap)
+    hm_nix = build_home_configs(hm_machines, shared_body)
+
+    sections =
+      []
+      |> maybe_add_section(nixos_nix, "nixosConfigurations")
+      |> maybe_add_section(hm_nix, "homeConfigurations")
       |> Enum.join("\n\n")
 
     """
@@ -141,13 +118,91 @@ defmodule Tomato.Backend.Flake do
     #{inputs_nix}#{follows_nix}  };
 
       outputs = { #{format_output_args(input_names)} }: {
-        nixosConfigurations = {
-    #{machines_nix}
-        };
+    #{sections}
       };
     }
     """
     |> String.trim()
+  end
+
+  defp build_nixos_configs([], _shared, _keymap), do: ""
+
+  defp build_nixos_configs(machines, shared_body, keymap) do
+    machines
+    |> Enum.map(fn {machine, fragments} ->
+      hostname = Map.get(machine, :hostname, "nixos")
+      system = Map.get(machine, :system, "aarch64-linux")
+      sv = Map.get(machine, :state_version, "24.11")
+      body = indent_fragments(fragments, "          ")
+
+      """
+          "#{hostname}" = nixpkgs.lib.nixosSystem {
+            system = "#{system}";
+            modules = [
+              ({ config, pkgs, lib, ... }: {
+                console.keyMap = "#{keymap}";
+                networking.hostName = "#{hostname}";
+
+                services.openssh = {
+                  enable = true;
+                  settings = {
+                    PermitRootLogin = "yes";
+                    PasswordAuthentication = true;
+                  };
+                };
+
+                networking.useDHCP = lib.mkDefault true;
+                system.stateVersion = "#{sv}";
+
+      #{shared_body}
+
+      #{body}
+              })
+            ];
+          };
+      """
+      |> String.trim_trailing()
+    end)
+    |> Enum.join("\n\n")
+  end
+
+  defp build_home_configs([], _shared), do: ""
+
+  defp build_home_configs(machines, shared_body) do
+    machines
+    |> Enum.map(fn {machine, fragments} ->
+      hostname = Map.get(machine, :hostname, "nixos")
+      username = Map.get(machine, :username, "user")
+      system = Map.get(machine, :system, "aarch64-linux")
+      body = indent_fragments(fragments, "          ")
+      config_name = "#{username}@#{hostname}"
+
+      """
+          "#{config_name}" = home-manager.lib.homeManagerConfiguration {
+            pkgs = nixpkgs.legacyPackages.#{system};
+            modules = [
+              ({ config, pkgs, lib, ... }: {
+                home.username = "#{username}";
+                home.homeDirectory = "/home/#{username}";
+                home.stateVersion = "#{Map.get(machine, :state_version, "24.11")}";
+                programs.home-manager.enable = true;
+
+      #{shared_body}
+
+      #{body}
+              })
+            ];
+          };
+      """
+      |> String.trim_trailing()
+    end)
+    |> Enum.join("\n\n")
+  end
+
+  defp maybe_add_section(sections, "", _name), do: sections
+
+  defp maybe_add_section(sections, content, name) do
+    sections ++ ["    #{name} = {\n#{content}\n    };"]
   end
 
   # --- Private ---

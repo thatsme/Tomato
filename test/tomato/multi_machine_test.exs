@@ -190,4 +190,125 @@ defmodule Tomato.MultiMachineTest do
 
     Graph.put_subgraph(graph, root)
   end
+
+  describe "Home Manager machines" do
+    test "home_manager machine generates homeConfigurations" do
+      graph = build_mixed_graph()
+      graph = %{graph | backend: :flake}
+      output = Walker.walk(graph)
+
+      assert output =~ "nixosConfigurations"
+      assert output =~ "homeConfigurations"
+    end
+
+    test "homeConfigurations uses username@hostname format" do
+      graph = build_mixed_graph()
+      graph = %{graph | backend: :flake}
+      output = Walker.walk(graph)
+
+      assert output =~ ~s("alex@macbook")
+    end
+
+    test "homeConfigurations uses home-manager.lib.homeManagerConfiguration" do
+      graph = build_mixed_graph()
+      graph = %{graph | backend: :flake}
+      output = Walker.walk(graph)
+
+      assert output =~ "home-manager.lib.homeManagerConfiguration"
+    end
+
+    test "home config sets home.username and home.homeDirectory" do
+      graph = build_mixed_graph()
+      graph = %{graph | backend: :flake}
+      output = Walker.walk(graph)
+
+      assert output =~ ~s(home.username = "alex")
+      assert output =~ ~s(home.homeDirectory = "/home/alex")
+    end
+
+    test "nixos machine does not appear in homeConfigurations" do
+      graph = build_mixed_graph()
+      graph = %{graph | backend: :flake}
+      output = Walker.walk(graph)
+
+      refute output =~ ~s("server" = home-manager)
+    end
+  end
+
+  defp build_mixed_graph do
+    graph = Graph.new("mixed")
+    oodn = Tomato.OODN.new("input_nixpkgs", "github:nixos/nixpkgs")
+    oodn_hm = Tomato.OODN.new("input_home-manager", "github:nix-community/home-manager")
+    graph = %{graph | oodn_registry: %{oodn.id => oodn, oodn_hm.id => oodn_hm}}
+
+    root = Graph.root_subgraph(graph)
+    input = Subgraph.input_node(root)
+    output = Subgraph.output_node(root)
+
+    # NixOS machine
+    c1 = Subgraph.new(name: "server", floor: 1)
+    c1i = Subgraph.input_node(c1)
+    c1o = Subgraph.output_node(c1)
+    c1l = Node.new(type: :leaf, name: "SSH", content: "services.openssh.enable = true;")
+
+    c1 =
+      c1
+      |> Subgraph.add_node(c1l)
+      |> Subgraph.add_edge(Edge.new(c1i.id, c1l.id))
+      |> Subgraph.add_edge(Edge.new(c1l.id, c1o.id))
+
+    m1 =
+      Node.new(
+        type: :gateway,
+        name: "server",
+        subgraph_id: c1.id,
+        machine: %{
+          hostname: "server",
+          system: "x86_64-linux",
+          state_version: "24.11",
+          type: :nixos,
+          username: "root"
+        }
+      )
+
+    # Home Manager machine
+    c2 = Subgraph.new(name: "macbook", floor: 1)
+    c2i = Subgraph.input_node(c2)
+    c2o = Subgraph.output_node(c2)
+    c2l = Node.new(type: :leaf, name: "Git", content: ~S(programs.git.enable = true;))
+
+    c2 =
+      c2
+      |> Subgraph.add_node(c2l)
+      |> Subgraph.add_edge(Edge.new(c2i.id, c2l.id))
+      |> Subgraph.add_edge(Edge.new(c2l.id, c2o.id))
+
+    m2 =
+      Node.new(
+        type: :gateway,
+        name: "macbook",
+        subgraph_id: c2.id,
+        machine: %{
+          hostname: "macbook",
+          system: "aarch64-darwin",
+          state_version: "24.11",
+          type: :home_manager,
+          username: "alex"
+        }
+      )
+
+    root = root |> Subgraph.add_node(m1) |> Subgraph.add_node(m2)
+
+    root =
+      root
+      |> Subgraph.add_edge(Edge.new(input.id, m1.id))
+      |> Subgraph.add_edge(Edge.new(input.id, m2.id))
+      |> Subgraph.add_edge(Edge.new(m1.id, output.id))
+      |> Subgraph.add_edge(Edge.new(m2.id, output.id))
+
+    graph
+    |> Graph.put_subgraph(root)
+    |> Graph.put_subgraph(c1)
+    |> Graph.put_subgraph(c2)
+  end
 end

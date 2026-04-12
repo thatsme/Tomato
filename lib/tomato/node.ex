@@ -4,10 +4,13 @@ defmodule Tomato.Node do
   """
 
   @type node_type :: :input | :output | :leaf | :gateway
+  @type machine_type :: :nixos | :home_manager
   @type machine_meta :: %{
           optional(:hostname) => String.t(),
           optional(:system) => String.t(),
-          optional(:state_version) => String.t()
+          optional(:state_version) => String.t(),
+          optional(:type) => machine_type(),
+          optional(:username) => String.t()
         }
   @type t :: %__MODULE__{
           id: String.t(),
