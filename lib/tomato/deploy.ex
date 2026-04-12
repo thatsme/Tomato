@@ -306,8 +306,8 @@ defmodule Tomato.Deploy do
       old_set = MapSet.new(old_lines)
       new_set = MapSet.new(new_lines)
 
-      removed = old_lines |> Enum.reject(&MapSet.member?(new_set, &1))
-      added = new_lines |> Enum.reject(&MapSet.member?(old_set, &1))
+      removed = Enum.reject(old_lines, &MapSet.member?(new_set, &1))
+      added = Enum.reject(new_lines, &MapSet.member?(old_set, &1))
 
       removed_str = Enum.map_join(removed, "\n", &("- " <> &1))
       added_str = Enum.map_join(added, "\n", &("+ " <> &1))

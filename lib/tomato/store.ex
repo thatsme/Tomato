@@ -542,7 +542,7 @@ defmodule Tomato.Store do
   defp push_history(state) do
     %{
       state
-      | undo_stack: [state.graph | state.undo_stack] |> Enum.take(@history_limit),
+      | undo_stack: Enum.take([state.graph | state.undo_stack], @history_limit),
         redo_stack: []
     }
   end
