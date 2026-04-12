@@ -164,11 +164,7 @@ defmodule Tomato.Backend.Flake do
                 };
 
                 networking.useDHCP = lib.mkDefault true;
-                system.stateVersion = "#{sv}";
-
-      #{shared_body}
-
-      #{body}
+                system.stateVersion = "#{sv}";#{compose_body(shared_body, body)}
               })
             ];
           };
@@ -196,11 +192,7 @@ defmodule Tomato.Backend.Flake do
                 home.username = "#{username}";
                 home.homeDirectory = "/home/#{username}";
                 home.stateVersion = "#{Map.get(machine, :state_version, "24.11")}";
-                programs.home-manager.enable = true;
-
-      #{shared_body}
-
-      #{body}
+                programs.home-manager.enable = true;#{compose_body(shared_body, body)}
               })
             ];
           };
@@ -208,6 +200,20 @@ defmodule Tomato.Backend.Flake do
 
       String.trim_trailing(raw)
     end)
+  end
+
+  # Assemble the shared+body section with correct spacing. When both are
+  # empty, returns "" so the surrounding template collapses to a direct
+  # transition with no blank lines. When one or both are present, returns
+  # "\n\n<content>" — the leading "\n\n" provides exactly one blank line
+  # after the preceding line, and parts are joined by one blank line.
+  defp compose_body(shared, body) do
+    [shared, body]
+    |> Enum.reject(&(&1 == ""))
+    |> case do
+      [] -> ""
+      parts -> "\n\n" <> Enum.join(parts, "\n\n")
+    end
   end
 
   defp maybe_add_section(sections, "", _name), do: sections
