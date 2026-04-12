@@ -120,4 +120,161 @@ defmodule Tomato.Demo do
 
     :ok
   end
+
+  @doc """
+  Seed a multi-machine demo graph showing 2 NixOS servers + 1 Home Manager config.
+  Creates a new graph file 'multi-machine.json'.
+  """
+  @spec seed_multi() :: :ok
+  def seed_multi do
+    {:ok, _graph, _filename} = Store.new_graph("multi-machine")
+    Store.set_backend(:flake)
+
+    # --- Global OODNs ---
+    Store.put_oodn("timezone", "Europe/Rome")
+    Store.put_oodn("locale", "it_IT.UTF-8")
+    Store.put_oodn("keymap", "it")
+    Store.put_oodn("state_version", "24.11")
+
+    # --- Flake inputs ---
+    Store.put_oodn("input_nixpkgs", "github:nixos/nixpkgs?ref=nixos-unstable")
+    Store.put_oodn("input_home-manager", "github:nix-community/home-manager")
+    Store.put_oodn("input_home-manager_follows", "nixpkgs")
+
+    graph = Store.get_graph()
+    root_sg = Tomato.Graph.root_subgraph(graph)
+
+    # --- Shared firewall (applies to all machines) ---
+    {:ok, shared_fw} =
+      Store.add_node(root_sg.id,
+        type: :leaf,
+        name: "Firewall",
+        position: %{x: 200, y: 180},
+        content: """
+        networking.firewall.enable = true;
+        networking.firewall.allowedTCPPorts = [ 22 80 443 ];
+        """
+      )
+
+    # --- Machine 1: webserver (NixOS) ---
+    {:ok, m1, m1_sg} =
+      Store.add_machine(root_sg.id,
+        hostname: "webserver",
+        system: "x86_64-linux",
+        state_version: "24.11",
+        type: :nixos,
+        position: %{x: 200, y: 320}
+      )
+
+    {:ok, nginx_node} =
+      Store.add_node(m1_sg.id,
+        type: :leaf,
+        name: "Nginx",
+        position: %{x: 200, y: 200},
+        content: """
+        services.nginx = {
+          enable = true;
+          virtualHosts."default" = { root = "/var/www"; };
+        };
+        """
+      )
+
+    m1_sg_full = Store.get_subgraph(m1_sg.id)
+    m1_in = Tomato.Subgraph.input_node(m1_sg_full)
+    m1_out = Tomato.Subgraph.output_node(m1_sg_full)
+    Store.add_edge(m1_sg.id, m1_in.id, nginx_node.id)
+    Store.add_edge(m1_sg.id, nginx_node.id, m1_out.id)
+
+    # --- Machine 2: dbserver (NixOS) ---
+    {:ok, m2, m2_sg} =
+      Store.add_machine(root_sg.id,
+        hostname: "dbserver",
+        system: "aarch64-linux",
+        state_version: "24.11",
+        type: :nixos,
+        position: %{x: 400, y: 320}
+      )
+
+    {:ok, pg_node} =
+      Store.add_node(m2_sg.id,
+        type: :leaf,
+        name: "PostgreSQL",
+        position: %{x: 200, y: 200},
+        content: """
+        services.postgresql = {
+          enable = true;
+          package = pkgs.postgresql_17;
+          ensureDatabases = [ "app" ];
+        };
+        """
+      )
+
+    m2_sg_full = Store.get_subgraph(m2_sg.id)
+    m2_in = Tomato.Subgraph.input_node(m2_sg_full)
+    m2_out = Tomato.Subgraph.output_node(m2_sg_full)
+    Store.add_edge(m2_sg.id, m2_in.id, pg_node.id)
+    Store.add_edge(m2_sg.id, pg_node.id, m2_out.id)
+
+    # --- Machine 3: laptop (Home Manager) ---
+    {:ok, m3, m3_sg} =
+      Store.add_machine(root_sg.id,
+        hostname: "laptop",
+        system: "aarch64-darwin",
+        state_version: "24.11",
+        type: :home_manager,
+        username: "alex",
+        position: %{x: 600, y: 320}
+      )
+
+    {:ok, git_node} =
+      Store.add_node(m3_sg.id,
+        type: :leaf,
+        name: "Git",
+        position: %{x: 200, y: 180},
+        content: ~S"""
+        programs.git = {
+          enable = true;
+          userName = "${username}";
+          userEmail = "${username}@localhost";
+        };
+        """
+      )
+
+    {:ok, zsh_node} =
+      Store.add_node(m3_sg.id,
+        type: :leaf,
+        name: "Zsh",
+        position: %{x: 400, y: 180},
+        content: """
+        programs.zsh = {
+          enable = true;
+          enableCompletion = true;
+          oh-my-zsh.enable = true;
+        };
+        """
+      )
+
+    m3_sg_full = Store.get_subgraph(m3_sg.id)
+    m3_in = Tomato.Subgraph.input_node(m3_sg_full)
+    m3_out = Tomato.Subgraph.output_node(m3_sg_full)
+    Store.add_edge(m3_sg.id, m3_in.id, git_node.id)
+    Store.add_edge(m3_sg.id, m3_in.id, zsh_node.id)
+    Store.add_edge(m3_sg.id, git_node.id, m3_out.id)
+    Store.add_edge(m3_sg.id, zsh_node.id, m3_out.id)
+
+    # --- Wire root: input -> firewall -> all machines -> output ---
+    updated_root = Store.get_subgraph(root_sg.id)
+    input = Tomato.Subgraph.input_node(updated_root)
+    output = Tomato.Subgraph.output_node(updated_root)
+
+    Store.add_edge(root_sg.id, input.id, shared_fw.id)
+    Store.add_edge(root_sg.id, shared_fw.id, m1.id)
+    Store.add_edge(root_sg.id, shared_fw.id, m2.id)
+    Store.add_edge(root_sg.id, shared_fw.id, m3.id)
+    Store.add_edge(root_sg.id, m1.id, output.id)
+    Store.add_edge(root_sg.id, m2.id, output.id)
+    Store.add_edge(root_sg.id, m3.id, output.id)
+
+    :ok
+  end
 end

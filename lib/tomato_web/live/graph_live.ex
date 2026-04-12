@@ -769,7 +769,7 @@ defmodule TomatoWeb.GraphLive do
         <div class="p-3 border-b border-base-300">
           <div class="flex items-center gap-2">
             <span class="text-lg font-bold text-primary">Tomato</span>
-            <span class="text-xs text-base-content/40">v0.1</span>
+            <span class="text-xs text-base-content/40">v0.2</span>
           </div>
           <div class="flex items-center gap-1 mt-2">
             <button
@@ -1056,7 +1056,7 @@ defmodule TomatoWeb.GraphLive do
         </div>
 
         <%!-- Canvas hints --%>
-        <div class="absolute bottom-4 right-4 z-10 text-xs text-base-content/30 space-y-0.5 text-right">
+        <div class="absolute top-4 right-4 z-10 text-xs text-base-content/30 space-y-0.5 text-right pointer-events-none">
           <div>Scroll: pan | Pinch/Ctrl+scroll: zoom</div>
           <div>Double-click: enter gateway | Cmd+click: edit leaf content</div>
           <div>Long-press / right-click: context menu</div>
@@ -1495,22 +1495,35 @@ defmodule TomatoWeb.GraphLive do
   attr :oodn_registry, :map, required: true
   attr :position, :map, required: true
 
+  @oodn_max_visible 6
+
   defp oodn_node(assigns) do
-    entries = assigns.oodn_registry |> Map.values() |> Enum.sort_by(& &1.key)
+    all_entries = assigns.oodn_registry |> Map.values() |> Enum.sort_by(& &1.key)
+    total_count = length(all_entries)
+    visible_entries = Enum.take(all_entries, @oodn_max_visible)
+    overflow = max(total_count - @oodn_max_visible, 0)
+    has_overflow = overflow > 0
+
     row_height = 20
     header_height = 32
     padding = 10
+    footer = if has_overflow, do: 18, else: 0
     width = 220
-    height = header_height + padding + max(length(entries), 1) * row_height + padding
+    visible_count = max(length(visible_entries), 1)
+    height = header_height + padding + visible_count * row_height + padding + footer
 
     assigns =
       assign(assigns,
-        entries: entries,
+        entries: visible_entries,
+        total_count: total_count,
+        overflow: overflow,
+        has_overflow: has_overflow,
         width: width,
         height: height,
         row_height: row_height,
         header_height: header_height,
-        padding: padding
+        padding: padding,
+        footer_y: header_height + padding + visible_count * row_height + 4
       )
 
     ~H"""
@@ -1572,7 +1585,7 @@ defmodule TomatoWeb.GraphLive do
         opacity="0.5"
         class="select-none pointer-events-none"
       >
-        {length(@entries)}
+        {@total_count}
       </text>
 
       <%!-- Separator line --%>
@@ -1632,6 +1645,21 @@ defmodule TomatoWeb.GraphLive do
         class="select-none pointer-events-none"
       >
         Double-click to add variables
+      </text>
+
+      <%!-- Overflow indicator --%>
+      <text
+        :if={@has_overflow}
+        x={@width / 2}
+        y={@footer_y + 10}
+        text-anchor="middle"
+        font-size="10"
+        font-style="italic"
+        fill="#a16207"
+        opacity="0.7"
+        class="select-none pointer-events-none"
+      >
+        + {@overflow} more (double-click to view)
       </text>
     </g>
     """
