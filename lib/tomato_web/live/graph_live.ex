@@ -149,6 +149,22 @@ defmodule TomatoWeb.GraphLive do
     {:noreply, socket}
   end
 
+  def handle_event("add_machine", _params, socket) do
+    sg = socket.assigns.subgraph
+    node_count = map_size(sg.nodes)
+    y = 100 + node_count * 80
+
+    {:ok, _machine, _child} =
+      Store.add_machine(sg.id,
+        hostname: "machine-#{node_count}",
+        system: "aarch64-linux",
+        state_version: "24.11",
+        position: %{x: 300, y: y}
+      )
+
+    {:noreply, socket}
+  end
+
   def handle_event("add_gateway", _params, socket) do
     sg = socket.assigns.subgraph
     node_count = map_size(sg.nodes)
@@ -310,6 +326,25 @@ defmodule TomatoWeb.GraphLive do
 
   def handle_event("close_editor", _params, socket) do
     {:noreply, assign(socket, :editing_content_node_id, nil)}
+  end
+
+  # --- Machine ---
+
+  def handle_event("update_machine", params, socket) do
+    node_id = params["node-id"]
+
+    machine = %{
+      hostname: params["hostname"],
+      system: params["system"],
+      state_version: params["state_version"]
+    }
+
+    Store.update_node(socket.assigns.subgraph.id, node_id,
+      machine: machine,
+      name: params["hostname"]
+    )
+
+    {:noreply, socket}
   end
 
   # --- Backend toggle ---
@@ -616,6 +651,13 @@ defmodule TomatoWeb.GraphLive do
           <button class="btn btn-sm btn-secondary w-full" phx-click="add_gateway">
             + Gateway
           </button>
+          <button
+            :if={@subgraph.floor == 0}
+            class="btn btn-sm btn-warning w-full"
+            phx-click="add_machine"
+          >
+            + Machine
+          </button>
         </div>
 
         <%!-- Node List --%>
@@ -665,7 +707,46 @@ defmodule TomatoWeb.GraphLive do
                 />
               </form>
             </div>
-            <div class="text-xs text-base-content/50">Type: {node.type}</div>
+            <div class="text-xs text-base-content/50">
+              Type: {node.type}{if Tomato.Node.machine?(node), do: " (machine)", else: ""}
+            </div>
+            <%!-- Machine metadata editor --%>
+            <div :if={Tomato.Node.machine?(node)} class="space-y-1">
+              <form phx-submit="update_machine" phx-value-node-id={node.id}>
+                <div class="flex gap-1 items-center">
+                  <label class="text-xs text-base-content/60 w-16">Host</label>
+                  <input
+                    type="text"
+                    name="hostname"
+                    value={node.machine.hostname}
+                    class="input input-xs input-bordered flex-1 font-mono"
+                  />
+                </div>
+                <div class="flex gap-1 items-center mt-1">
+                  <label class="text-xs text-base-content/60 w-16">System</label>
+                  <select name="system" class="select select-xs select-bordered flex-1 font-mono">
+                    <option value="aarch64-linux" selected={node.machine.system == "aarch64-linux"}>
+                      aarch64-linux
+                    </option>
+                    <option value="x86_64-linux" selected={node.machine.system == "x86_64-linux"}>
+                      x86_64-linux
+                    </option>
+                  </select>
+                </div>
+                <div class="flex gap-1 items-center mt-1">
+                  <label class="text-xs text-base-content/60 w-16">Version</label>
+                  <input
+                    type="text"
+                    name="state_version"
+                    value={node.machine.state_version}
+                    class="input input-xs input-bordered flex-1 font-mono"
+                  />
+                </div>
+                <button type="submit" class="btn btn-xs btn-warning mt-1 w-full">
+                  Update Machine
+                </button>
+              </form>
+            </div>
             <div class="flex flex-wrap gap-2">
               <button
                 :if={node.type == :leaf}
@@ -805,17 +886,34 @@ defmodule TomatoWeb.GraphLive do
   attr :connecting, :boolean, default: false
 
   defp graph_node(assigns) do
+    is_machine = Tomato.Node.machine?(assigns.node)
+    assigns = assign(assigns, :is_machine, is_machine)
+
     ~H"""
     <g
       class="graph-node cursor-grab active:cursor-grabbing"
       data-node-id={@node.id}
-      data-node-type={@node.type}
+      data-node-type={if @is_machine, do: "machine", else: @node.type}
       data-node-name={@node.name}
       transform={"translate(#{@node.position.x}, #{@node.position.y})"}
       phx-click="select_node"
       phx-value-node-id={@node.id}
     >
+      <%!-- Machine node: wider, distinct style --%>
       <rect
+        :if={@is_machine}
+        x="-80"
+        y="-25"
+        width="160"
+        height="50"
+        rx="8"
+        fill="#fef3c7"
+        stroke="#d97706"
+        stroke-width={if @selected, do: "3", else: "2"}
+      />
+      <%!-- Regular node --%>
+      <rect
+        :if={!@is_machine}
         x="-60"
         y="-20"
         width="120"
@@ -826,9 +924,32 @@ defmodule TomatoWeb.GraphLive do
           node_rect_class(@node.type, @selected)
         ]}
       />
-      <%!-- Gateway indicator --%>
+      <%!-- Machine icon --%>
+      <text
+        :if={@is_machine}
+        x="-62"
+        y="1"
+        font-size="16"
+        class="select-none pointer-events-none"
+      >
+        &#9881;
+      </text>
+      <%!-- Machine system label --%>
+      <text
+        :if={@is_machine}
+        x="0"
+        y="12"
+        text-anchor="middle"
+        font-size="9"
+        fill="#92400e"
+        opacity="0.6"
+        class="select-none pointer-events-none"
+      >
+        {@node.machine.system}
+      </text>
+      <%!-- Gateway indicator (non-machine) --%>
       <circle
-        :if={@node.type == :gateway}
+        :if={@node.type == :gateway && !@is_machine}
         cx="-42"
         cy="0"
         r="6"
@@ -846,8 +967,12 @@ defmodule TomatoWeb.GraphLive do
       />
       <text
         text-anchor="middle"
-        dominant-baseline="central"
-        class={["text-xs select-none pointer-events-none", node_text_class(@selected)]}
+        dominant-baseline={if @is_machine, do: "auto", else: "central"}
+        y={if @is_machine, do: "-3", else: "0"}
+        class={[
+          "text-xs select-none pointer-events-none",
+          if(@is_machine, do: "fill-amber-800 font-bold", else: node_text_class(@selected))
+        ]}
       >
         {@node.name}
       </text>

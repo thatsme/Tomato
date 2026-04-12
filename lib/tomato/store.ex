@@ -119,6 +119,13 @@ defmodule Tomato.Store do
     GenServer.call(server, {:move_oodn, position})
   end
 
+  @doc "Add a machine (gateway with machine metadata and child subgraph)."
+  @spec add_machine(server(), String.t(), keyword()) ::
+          {:ok, Node.t(), Subgraph.t()} | {:error, atom(), String.t()}
+  def add_machine(server \\ __MODULE__, subgraph_id, attrs) do
+    GenServer.call(server, {:add_machine, subgraph_id, attrs})
+  end
+
   @doc "Set the graph backend (:traditional or :flake)."
   @spec set_backend(server(), Graph.backend()) :: :ok
   def set_backend(server \\ __MODULE__, backend) when backend in [:traditional, :flake] do
@@ -383,6 +390,41 @@ defmodule Tomato.Store do
     end
   end
 
+  def handle_call({:add_machine, subgraph_id, attrs}, _from, state) do
+    with {:ok, sg} <- fetch_subgraph(state.graph, subgraph_id) do
+      hostname = attrs[:hostname] || "nixos"
+      child_sg = Subgraph.new(name: hostname, floor: sg.floor + 1)
+
+      machine_meta = %{
+        hostname: hostname,
+        system: attrs[:system] || "aarch64-linux",
+        state_version: attrs[:state_version] || "24.11"
+      }
+
+      machine_node =
+        Node.new(
+          type: :gateway,
+          name: hostname,
+          subgraph_id: child_sg.id,
+          machine: machine_meta,
+          position: attrs[:position] || %{x: 0, y: 0}
+        )
+
+      new_sg = Subgraph.add_node(sg, machine_node)
+
+      graph =
+        state.graph
+        |> Graph.put_subgraph(new_sg)
+        |> Graph.put_subgraph(child_sg)
+
+      state = schedule_flush(%{state | graph: graph})
+      broadcast(graph)
+      {:reply, {:ok, machine_node, child_sg}, state}
+    else
+      error -> {:reply, error, state}
+    end
+  end
+
   def handle_call({:set_backend, backend}, _from, state) do
     graph = %{state.graph | backend: backend}
     state = schedule_flush(%{state | graph: graph})
@@ -483,6 +525,7 @@ defmodule Tomato.Store do
                template_fn: n["template_fn"],
                subgraph_id: n["subgraph_id"],
                content: n["content"],
+               machine: decode_machine(n["machine"]),
                inputs: n["inputs"] || [],
                outputs: n["outputs"] || [],
                position: %{
@@ -531,6 +574,16 @@ defmodule Tomato.Store do
       backend: decode_backend(json_map["backend"])
     }
   end
+
+  defp decode_machine(nil), do: nil
+
+  defp decode_machine(%{"hostname" => h, "system" => s, "state_version" => sv}),
+    do: %{hostname: h, system: s, state_version: sv}
+
+  defp decode_machine(%{"hostname" => h}),
+    do: %{hostname: h, system: "aarch64-linux", state_version: "24.11"}
+
+  defp decode_machine(_), do: nil
 
   defp decode_backend("flake"), do: :flake
   defp decode_backend(_), do: :traditional
