@@ -4,6 +4,8 @@ A hierarchical DAG engine for composable NixOS configuration management.
 
 Tomato models system configurations as directed acyclic graphs organized in floors (levels). Each leaf node holds a NixOS configuration fragment. Gateway nodes point to subgraphs on the floor below. Walking the graph top-down in topological order composes a valid `configuration.nix` or `flake.nix` — which can be deployed to a NixOS machine via SSH with a single click.
 
+**OODNs** (Out-Of-DAG Nodes) are global key-value pairs — hostnames, ports, flake inputs — that leaf nodes reference via `${key}` placeholders. The walker interpolates them at generation time, so changing one value updates every node that references it.
+
 ![Tomato Graph Editor — multi-machine flake](docs/screenshots/tomato_flake.png)
 
 ## Quick Start
@@ -89,6 +91,8 @@ Floor 1 (inside Services)
 
 Real services start, stop, and reconfigure on a real NixOS machine. Change `${nginx_port}` from `80` to `8080` in the OODN node → both the firewall rules and Nginx config update in one rebuild.
 
+> **Note on Nix syntax errors.** The walker treats leaf content as opaque strings — it does not parse Nix. A syntax error in a fragment passes through generation silently and only surfaces at `nixos-rebuild` time on the remote machine, after a full SSH+SFTP roundtrip. Local validation (`nix-instantiate --parse` on each fragment before write) is on the v0.3 list.
+
 ### Backend Toggle
 
 Click **Traditional / Flake** in the sidebar header to switch output format:
@@ -166,6 +170,8 @@ The sidebar provides node search, undo/redo, graph manager, backend toggle, gene
 
 ## Deploy Configuration
 
+> **Security notice.** The current deploy path uses **SSH password authentication only** — credentials live in environment variables or `config/deploy.secret.exs` (gitignored) and are passed to `:ssh.connect/3` in plain text. This is acceptable for lab machines and trusted networks; **do not point Tomato at production hosts as-is**. SSH key authentication is planned and tracked under v0.3 — until then, use a dedicated low-privilege deploy user, restrict the target host to your LAN/VPN, and rotate the password on every shared machine.
+
 To deploy generated configs to a NixOS machine, set your target via environment variables or `config/deploy.secret.exs`:
 
 ```bash
@@ -227,7 +233,7 @@ mix deps.get            # install dependencies
 mix compile             # compile
 mix phx.server          # start dev server at localhost:4001
 iex -S mix phx.server   # start with interactive shell
-mix test                # run tests (69 tests)
+mix test                # run the test suite
 mix format              # format code
 ```
 
@@ -235,10 +241,11 @@ mix format              # format code
 
 - Elixir 1.15+
 - Erlang/OTP 26+
+- **Nix 2.18+ with flakes enabled** on any host that will rebuild generated output. Add `experimental-features = nix-command flakes` to `/etc/nix/nix.conf` (or `~/.config/nix/nix.conf`). Tomato's default flake input pins `nixpkgs` to the `nixos-unstable` channel via `input_nixpkgs = github:nixos/nixpkgs?ref=nixos-unstable` — override the OODN if you want a stable channel.
 
 ## Roadmap
 
-See [docs/ROADMAP_v0.2.md](docs/ROADMAP_v0.2.md) for the v0.2 plan and [docs/REFACTOR_v0.3.md](docs/REFACTOR_v0.3.md) for the v0.3 refactor plan (god module split + nixpkgs options search).
+**v0.3 — paying down technical debt before adding features.** Three god modules (`TomatoWeb.GraphLive`, `Tomato.Store`, `Tomato.Deploy`) get split into focused submodules with isolated tests; the deploy layer also gains SSH key authentication and local Nix-fragment validation. Full plan in [docs/REFACTOR_v0.3.md](docs/REFACTOR_v0.3.md). The v0.2 plan that shipped the flake backend, multi-machine support, and Home Manager is archived in [docs/ROADMAP_v0.2.md](docs/ROADMAP_v0.2.md).
 
 ## License
 
