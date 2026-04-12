@@ -275,6 +275,167 @@ defmodule Tomato.MultiMachineTest do
     Graph.put_subgraph(graph, root)
   end
 
+  describe "per-machine oodn_overrides" do
+    test "machine oodn_overrides shadow global OODN for that machine only" do
+      graph = build_two_nginx_machines_with_overrides()
+      graph = %{graph | backend: :flake}
+      output = Walker.walk(graph)
+
+      # Each machine should get its own nginx_port via the override
+      assert output =~ ~s(nginx on port 8080)
+      assert output =~ ~s(nginx on port 8081)
+    end
+
+    test "unset override falls through to global OODN" do
+      graph = build_nginx_with_only_global_port()
+      graph = %{graph | backend: :flake}
+      output = Walker.walk(graph)
+
+      # Machine without an override uses the global nginx_port=80
+      assert output =~ ~s(nginx on port 80)
+    end
+
+    test "override wins over hardcoded hostname" do
+      # oodn_overrides is merged AFTER the hardcoded machine keys, so a
+      # user who sets `hostname` in overrides can shadow the gateway's
+      # machine.hostname. This is intentional — overrides are the highest
+      # precedence layer.
+      graph = build_machine_with_override_hostname()
+      graph = %{graph | backend: :flake}
+      output = Walker.walk(graph)
+
+      assert output =~ ~s(hostname-via-override)
+    end
+  end
+
+  defp build_two_nginx_machines_with_overrides do
+    graph = Graph.new("two-nginx")
+    oodn = Tomato.OODN.new("nginx_port", "80")
+    graph = %{graph | oodn_registry: %{oodn.id => oodn}}
+
+    root = Graph.root_subgraph(graph)
+    input = Subgraph.input_node(root)
+    output = Subgraph.output_node(root)
+
+    {root, graph} = add_nginx_machine(graph, root, "srv-a", %{"nginx_port" => "8080"}, 100)
+    {root, graph} = add_nginx_machine(graph, root, "srv-b", %{"nginx_port" => "8081"}, 300)
+
+    machines = Walker.find_machines(root)
+    [m1, m2] = machines
+
+    root =
+      root
+      |> Subgraph.add_edge(Edge.new(input.id, m1.id))
+      |> Subgraph.add_edge(Edge.new(input.id, m2.id))
+      |> Subgraph.add_edge(Edge.new(m1.id, output.id))
+      |> Subgraph.add_edge(Edge.new(m2.id, output.id))
+
+    Graph.put_subgraph(graph, root)
+  end
+
+  defp build_nginx_with_only_global_port do
+    graph = Graph.new("one-nginx")
+    oodn = Tomato.OODN.new("nginx_port", "80")
+    graph = %{graph | oodn_registry: %{oodn.id => oodn}}
+
+    root = Graph.root_subgraph(graph)
+    input = Subgraph.input_node(root)
+    output = Subgraph.output_node(root)
+
+    {root, graph} = add_nginx_machine(graph, root, "srv", %{}, 200)
+    [m] = Walker.find_machines(root)
+
+    root =
+      root
+      |> Subgraph.add_edge(Edge.new(input.id, m.id))
+      |> Subgraph.add_edge(Edge.new(m.id, output.id))
+
+    Graph.put_subgraph(graph, root)
+  end
+
+  defp build_machine_with_override_hostname do
+    graph = Graph.new("override-host")
+
+    root = Graph.root_subgraph(graph)
+    input = Subgraph.input_node(root)
+    output = Subgraph.output_node(root)
+
+    # Build a machine whose hardcoded hostname is "srv-real" but whose
+    # oodn_overrides sets hostname="hostname-via-override". The leaf
+    # inside interpolates ${hostname}.
+    child = Subgraph.new(name: "srv-real", floor: 1)
+    cin = Subgraph.input_node(child)
+    cout = Subgraph.output_node(child)
+    leaf = Node.new(type: :leaf, name: "Host", content: ~S(host.label = "${hostname}";))
+
+    child =
+      child
+      |> Subgraph.add_node(leaf)
+      |> Subgraph.add_edge(Edge.new(cin.id, leaf.id))
+      |> Subgraph.add_edge(Edge.new(leaf.id, cout.id))
+
+    machine =
+      Node.new(
+        type: :gateway,
+        name: "srv-real",
+        subgraph_id: child.id,
+        machine: %{
+          hostname: "srv-real",
+          system: "x86_64-linux",
+          state_version: "24.11",
+          type: :nixos,
+          oodn_overrides: %{"hostname" => "hostname-via-override"}
+        }
+      )
+
+    root =
+      root
+      |> Subgraph.add_node(machine)
+      |> Subgraph.add_edge(Edge.new(input.id, machine.id))
+      |> Subgraph.add_edge(Edge.new(machine.id, output.id))
+
+    graph |> Graph.put_subgraph(root) |> Graph.put_subgraph(child)
+  end
+
+  # Build an nginx-serving machine subgraph and return {root, graph} with
+  # the machine added at the given root position.
+  defp add_nginx_machine(graph, root, hostname, overrides, x) do
+    child = Subgraph.new(name: hostname, floor: 1)
+    cin = Subgraph.input_node(child)
+    cout = Subgraph.output_node(child)
+
+    leaf =
+      Node.new(
+        type: :leaf,
+        name: "Nginx",
+        content: ~S(nginx on port ${nginx_port})
+      )
+
+    child =
+      child
+      |> Subgraph.add_node(leaf)
+      |> Subgraph.add_edge(Edge.new(cin.id, leaf.id))
+      |> Subgraph.add_edge(Edge.new(leaf.id, cout.id))
+
+    machine =
+      Node.new(
+        type: :gateway,
+        name: hostname,
+        subgraph_id: child.id,
+        position: %{x: x, y: 200},
+        machine: %{
+          hostname: hostname,
+          system: "x86_64-linux",
+          state_version: "24.11",
+          type: :nixos,
+          oodn_overrides: overrides
+        }
+      )
+
+    root = Subgraph.add_node(root, machine)
+    {root, graph |> Graph.put_subgraph(child)}
+  end
+
   describe "Home Manager machines" do
     test "home_manager machine generates homeConfigurations" do
       graph = build_mixed_graph()

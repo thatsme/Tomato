@@ -88,6 +88,63 @@ defmodule Tomato.Store.PersistenceTest do
       assert machine_node.machine.type == :home_manager
       assert machine_node.machine.hostname == "laptop"
     end
+
+    test "roundtrips machine oodn_overrides" do
+      graph = Graph.new("with-overrides")
+      sg = Graph.root_subgraph(graph)
+
+      {:ok, graph, _node, _child} =
+        Machine.add(graph, sg.id,
+          hostname: "srv",
+          oodn_overrides: %{"nginx_port" => "8080", "pg_port" => "5433"}
+        )
+
+      decoded = roundtrip(graph)
+      decoded_sg = Graph.get_subgraph(decoded, sg.id)
+      machine_node = decoded_sg.nodes |> Map.values() |> Enum.find(& &1.machine)
+
+      assert machine_node.machine.oodn_overrides == %{
+               "nginx_port" => "8080",
+               "pg_port" => "5433"
+             }
+    end
+
+    test "legacy machine JSON without oodn_overrides defaults to empty map" do
+      json_map = %{
+        "id" => "g1",
+        "name" => "legacy",
+        "root_subgraph_id" => "sg1",
+        "subgraphs" => %{
+          "sg1" => %{
+            "id" => "sg1",
+            "name" => "root",
+            "floor" => 0,
+            "nodes" => %{
+              "m1" => %{
+                "id" => "m1",
+                "name" => "srv",
+                "type" => "gateway",
+                "machine" => %{
+                  "hostname" => "srv",
+                  "system" => "x86_64-linux",
+                  "state_version" => "24.11",
+                  "type" => "nixos"
+                  # no oodn_overrides key
+                }
+              }
+            },
+            "edges" => %{}
+          }
+        },
+        "oodn_registry" => %{}
+      }
+
+      decoded = Persistence.decode_graph(json_map)
+      sg = Graph.get_subgraph(decoded, "sg1")
+      machine = Map.get(sg.nodes, "m1")
+
+      assert machine.machine.oodn_overrides == %{}
+    end
   end
 
   describe "leaf target field" do

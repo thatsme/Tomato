@@ -28,7 +28,8 @@ defmodule Tomato.Node do
           optional(:system) => String.t(),
           optional(:state_version) => String.t(),
           optional(:type) => machine_type(),
-          optional(:username) => String.t()
+          optional(:username) => String.t(),
+          optional(:oodn_overrides) => %{String.t() => String.t()}
         }
   @type t :: %__MODULE__{
           id: String.t(),

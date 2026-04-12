@@ -43,12 +43,7 @@ defmodule Tomato.Walker do
       # and we need to filter by each machine's type.
       machine_configs =
         Enum.map(machines, fn machine_node ->
-          machine_oodn =
-            oodn
-            |> Map.put("hostname", machine_node.machine.hostname)
-            |> Map.put("system_arch", machine_node.machine.system)
-            |> Map.put("state_version", machine_node.machine.state_version)
-            |> Map.put("username", Map.get(machine_node.machine, :username, "user"))
+          machine_oodn = build_machine_oodn(oodn, machine_node.machine)
 
           child_sg = Graph.get_subgraph(graph, machine_node.subgraph_id)
           tagged = if child_sg, do: walk_subgraph(child_sg, graph, machine_oodn), else: []
@@ -142,19 +137,9 @@ defmodule Tomato.Walker do
 
   defp collect_fragments(%{type: :gateway, subgraph_id: sg_id, machine: machine}, graph, oodn)
        when is_binary(sg_id) and is_map(machine) do
-    # Machine gateway — override OODNs with machine-specific values.
-    machine_oodn =
-      oodn
-      |> Map.put("hostname", Map.get(machine, :hostname, Map.get(oodn, "hostname", "nixos")))
-      |> Map.put(
-        "system_arch",
-        Map.get(machine, :system, Map.get(oodn, "system_arch", "aarch64-linux"))
-      )
-      |> Map.put(
-        "state_version",
-        Map.get(machine, :state_version, Map.get(oodn, "state_version", "24.11"))
-      )
-      |> Map.put("username", Map.get(machine, :username, Map.get(oodn, "username", "user")))
+    # Machine gateway — override OODNs with machine-specific values
+    # (hardcoded hostname/system/etc. plus any user-supplied overrides).
+    machine_oodn = build_machine_oodn(oodn, machine)
 
     case Graph.get_subgraph(graph, sg_id) do
       nil -> []
@@ -171,6 +156,27 @@ defmodule Tomato.Walker do
   end
 
   defp collect_fragments(_node, _graph, _oodn), do: []
+
+  # Build the effective OODN map for a machine: start from the global
+  # OODN, overlay the hardcoded per-machine keys (hostname, system_arch,
+  # state_version, username), then overlay any user-supplied
+  # :oodn_overrides on top so they win over both the global OODN and
+  # the hardcoded keys.
+  @spec build_machine_oodn(map(), map()) :: map()
+  defp build_machine_oodn(oodn, machine) do
+    oodn
+    |> Map.put("hostname", Map.get(machine, :hostname, Map.get(oodn, "hostname", "nixos")))
+    |> Map.put(
+      "system_arch",
+      Map.get(machine, :system, Map.get(oodn, "system_arch", "aarch64-linux"))
+    )
+    |> Map.put(
+      "state_version",
+      Map.get(machine, :state_version, Map.get(oodn, "state_version", "24.11"))
+    )
+    |> Map.put("username", Map.get(machine, :username, Map.get(oodn, "username", "user")))
+    |> Map.merge(Map.get(machine, :oodn_overrides, %{}))
+  end
 
   # Filter tagged fragments by the target machine type. Keeps fragments
   # tagged `:all` or exactly matching the machine type; drops the rest.

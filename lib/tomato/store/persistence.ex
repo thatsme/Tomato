@@ -123,11 +123,18 @@ defmodule Tomato.Store.Persistence do
       system: m["system"] || "aarch64-linux",
       state_version: m["state_version"] || "24.11",
       type: decode_machine_type(m["type"]),
-      username: m["username"] || "user"
+      username: m["username"] || "user",
+      oodn_overrides: decode_oodn_overrides(m["oodn_overrides"])
     }
   end
 
   defp decode_machine(_), do: nil
+
+  defp decode_oodn_overrides(m) when is_map(m) do
+    Map.new(m, fn {k, v} -> {to_string(k), to_string(v)} end)
+  end
+
+  defp decode_oodn_overrides(_), do: %{}
 
   defp decode_machine_type("home_manager"), do: :home_manager
   defp decode_machine_type(_), do: :nixos

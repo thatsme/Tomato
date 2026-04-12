@@ -17,6 +17,8 @@ defmodule Tomato.Store.Machine do
     * `:type` — `:nixos` (default) or `:home_manager`
     * `:username` — defaults to `"user"`
     * `:position` — defaults to `%{x: 0, y: 0}`
+    * `:oodn_overrides` — per-machine OODN map that shadows the global
+      OODN registry inside this machine's subtree; defaults to `%{}`
   """
   @spec add(Graph.t(), String.t(), keyword()) ::
           {:ok, Graph.t(), Node.t(), Subgraph.t()} | {:error, atom(), String.t()}
@@ -30,7 +32,8 @@ defmodule Tomato.Store.Machine do
         system: attrs[:system] || "aarch64-linux",
         state_version: attrs[:state_version] || "24.11",
         type: attrs[:type] || :nixos,
-        username: attrs[:username] || "user"
+        username: attrs[:username] || "user",
+        oodn_overrides: attrs[:oodn_overrides] || %{}
       }
 
       machine_node =
