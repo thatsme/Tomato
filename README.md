@@ -46,6 +46,23 @@ A developer dotfiles example — no NixOS server, just user-level configuration.
 - **OODNs**: `username`, `git_name`, `git_email`, flake inputs
 - **Backend**: Flake (`flake.nix` with `homeConfigurations."alex@laptop"`)
 
+## What's New in v0.3
+
+v0.3 is an internal-quality release — refactoring, bug fixes, and small correctness features. **No breaking changes**: every v0.2 graph file loads and renders unchanged, all public APIs are preserved spec-for-spec.
+
+| Change | Description |
+|---|---|
+| **Deploy split** | `Tomato.Deploy` shrunk from 320 to ~140 lines; logic moved into `Tomato.Deploy.SSH`, `SFTP`, `Rebuild`, `Diff`, `Config`. Public API preserved; `TomatoWeb.GraphLive` needed no changes. |
+| **SSH key authentication** | Credentials resolve in order: explicit `:identity_file` → `TOMATO_DEPLOY_IDENTITY_FILE` env var → `~/.ssh/id_ed25519` → `~/.ssh/id_rsa` → password fallback. Key auth uses Erlang `:ssh.connect/3` with `user_dir`. |
+| **Store split** | `Tomato.Store` shrunk from 716 to 182 lines — thin GenServer facade over `Store.State`, `Mutations`, `OODN`, `Machine`, `Persistence`, `GraphFiles`. Pure mutation modules are testable without a running GenServer. |
+| **Seeder fix** | Demo graphs seed independently. If any of `default.json`, `multi-machine.json`, `home-manager.json` is missing on startup, the seeder creates just that one — previously a populated `default.json` blocked all seeding. |
+| **Leaf `target` field** | Each leaf declares `target :: :nixos \| :home_manager \| :all` (default `:nixos`). The walker filters shared root-level fragments by each machine's type, so `networking.firewall.*` is never spliced into a Home Manager module. |
+| **Per-machine OODN overlay** | Each machine gateway carries an optional `oodn_overrides` map that shadows the global OODN registry inside that machine's subtree. Two machines can now hold different `nginx_port` values without naming hacks. |
+| **Canvas components split** | SVG render components (`graph_node`, `edge_line`, `oodn_node`, `minimap`) and their style helpers moved from `TomatoWeb.GraphLive` into `TomatoWeb.GraphLive.CanvasComponents`. First phase of the LiveView god-module refactor. |
+| **Test coverage** | 69 tests → 114 tests (+45) across walker target filtering, mutations, persistence roundtrips, deploy config resolution, and OODN overlay scenarios. |
+
+> ⚠️ **UI gap — `target` and `oodn_overrides` are data-layer only in v0.3.** Both features work end-to-end in the walker, persist to JSON correctly, and have full test coverage, but there's no visual editor yet. New leaves default to `target: :nixos` and new machines default to `oodn_overrides: %{}`, which is correct for every existing graph — but if you need to mark a leaf as `:home_manager` or attach per-machine overrides, you currently have to edit `priv/graphs/*.json` by hand or use `iex -S mix phx.server` (see the [OODN Variables](#oodn-variables) section for an example). **Sidebar editors for both are queued as the next v0.3 PR.**
+
 ## What's New in v0.2
 
 | Feature | Description |
@@ -73,10 +90,10 @@ Floor 1 (inside Services)
           Nginx      ↗
 ```
 
-- **Leaf nodes** hold Nix config fragments (e.g. `services.nginx.enable = true;`)
+- **Leaf nodes** hold Nix config fragments (e.g. `services.nginx.enable = true;`). Each leaf declares a `target` field — `:nixos` (default), `:home_manager`, or `:all` — which tells the walker whether to include it when generating each backend-specific machine config
 - **Gateway nodes** contain a subgraph on the floor below — composing complex configs from smaller pieces
-- **Machine nodes** are gateways with metadata (`hostname`, `system`, `state_version`, `type`). Per-machine OODN override applies when walking inside a machine
-- **OODN node** (Out-Of-DAG Node) is a singleton holding global variables (`${hostname}`, `${timezone}`, `input_nixpkgs`, etc.) referenced by leaf nodes via `${key}` placeholders
+- **Machine nodes** are gateways with metadata (`hostname`, `system`, `state_version`, `type`, `oodn_overrides`). The walker overlays the machine's hardcoded keys and any user-supplied `oodn_overrides` on top of the global OODN when interpolating that machine's subtree
+- **OODN node** (Out-Of-DAG Node) is a canvas singleton holding global key-value pairs (`${hostname}`, `${timezone}`, `input_nixpkgs`, etc.) referenced by leaf nodes via `${key}` placeholders. Per-machine `oodn_overrides` shadow the global OODN for that machine's subtree only
 - **Edges** define dependency order — the walker traverses nodes in topological order
 
 ### Generate & Deploy
@@ -110,9 +127,19 @@ input_home-manager_follows = nixpkgs
 
 ### Multi-Machine
 
-Each machine is a root-level gateway with metadata. The walker generates one `nixosConfigurations` (or `homeConfigurations`) entry per machine, with per-machine `${hostname}`, `${system_arch}`, `${state_version}`, and `${username}` overrides for OODN interpolation.
+Each machine is a root-level gateway with metadata. The walker generates one `nixosConfigurations` (or `homeConfigurations`) entry per machine, with per-machine `${hostname}`, `${system_arch}`, `${state_version}`, and `${username}` overrides automatically applied during OODN interpolation.
 
-Shared leaf nodes at the root level get included in every machine's config — perfect for firewall rules, common packages, or base hardening.
+**Shared root-level fragments**: leaf nodes placed at the root (not inside any machine gateway) get included in machines' configs — useful for firewall rules, common packages, or base hardening applied to every server. Each leaf's `target` field controls which machines receive it:
+
+- `target: :nixos` (default) — included in `nixosConfigurations` entries, excluded from `homeConfigurations`
+- `target: :home_manager` — included in `homeConfigurations`, excluded from NixOS
+- `target: :all` — included in both
+
+So a `networking.firewall.*` leaf ships to the two NixOS servers but not the Home Manager laptop, while a `programs.direnv.enable` leaf would go to the laptop only.
+
+**Per-machine OODN overrides**: each machine gateway can carry an `oodn_overrides` map that shadows the global OODN registry inside that machine's subtree. Two machines with the same service can have different values (e.g. different `nginx_port` per machine) without naming hacks. The global OODN remains the singleton fallback layer for anything the machine doesn't override.
+
+> ⚠️ **v0.3 data-layer only**: the `target` field and `oodn_overrides` map are fully functional in the walker and persisted to JSON, but there is no sidebar editor for either yet. See [OODN Variables](#oodn-variables) below for how to set non-default values via `iex` or direct JSON editing in the current release.
 
 ### Template Library
 
@@ -151,6 +178,56 @@ input_home-manager_follows = nixpkgs
 
 Leaf nodes reference these with `${key}` syntax. The walker interpolates them at generation time. Change a value once, every referencing node updates. The visible OODN node caps at 6 entries with a `+N more` indicator — double-click to open the full editor.
 
+#### Per-machine OODN overrides (v0.3)
+
+Each machine gateway can carry an `oodn_overrides` map that takes precedence over the global OODN registry when the walker interpolates that machine's subtree. Precedence layering, highest to lowest:
+
+1. `machine.oodn_overrides` — user-supplied, wins over everything
+2. Hardcoded machine keys — `hostname`, `system_arch`, `state_version`, `username`
+3. Global OODN registry — the canvas singleton, everything else falls through to here
+
+> ⚠️ **The global OODN panel on the canvas remains the only visual editor in v0.3.** Per-machine overrides are fully wired through the walker and persisted to JSON, but there's no sidebar editor for them yet. A scoped OODN panel that appears inside each machine's subgraph is queued as the next v0.3 PR.
+
+Until the UI lands, the two ways to set per-machine overrides are:
+
+**(a) Edit the graph file directly** — open `priv/graphs/<yourgraph>.json`, find the machine gateway node, and add an `oodn_overrides` object to its `machine` map:
+
+```json
+{
+  "id": "node-abc",
+  "type": "gateway",
+  "machine": {
+    "hostname": "webserver-a",
+    "system": "x86_64-linux",
+    "state_version": "24.11",
+    "type": "nixos",
+    "oodn_overrides": {
+      "nginx_port": "8080",
+      "max_clients": "200"
+    }
+  }
+}
+```
+
+Restart the server to reload (or call `Store.load_graph/1` from iex).
+
+**(b) Create the machine from `iex -S mix phx.server`**:
+
+```elixir
+graph = Tomato.Store.get_graph()
+root = Tomato.Graph.root_subgraph(graph)
+
+Tomato.Store.add_machine(root.id,
+  hostname: "webserver-a",
+  system: "x86_64-linux",
+  state_version: "24.11",
+  type: :nixos,
+  oodn_overrides: %{"nginx_port" => "8080"}
+)
+```
+
+Either way, the walker picks them up on the next Generate. Leaves inside the machine that reference `${nginx_port}` resolve against the override; shared root-level leaves still see the global `nginx_port`.
+
 ## Canvas Interactions
 
 | Action | Effect |
@@ -170,7 +247,15 @@ The sidebar provides node search, undo/redo, graph manager, backend toggle, gene
 
 ## Deploy Configuration
 
-> **Security notice.** The current deploy path uses **SSH password authentication only** — credentials live in environment variables or `config/deploy.secret.exs` (gitignored) and are passed to `:ssh.connect/3` in plain text. This is acceptable for lab machines and trusted networks; **do not point Tomato at production hosts as-is**. SSH key authentication is planned and tracked under v0.3 — until then, use a dedicated low-privilege deploy user, restrict the target host to your LAN/VPN, and rotate the password on every shared machine.
+Tomato supports both **SSH public-key authentication** (recommended) and legacy password authentication as a fallback. Credentials are resolved in this order, first match wins:
+
+1. Explicit `:identity_file` key in `config/deploy.secret.exs`
+2. `TOMATO_DEPLOY_IDENTITY_FILE` environment variable
+3. Auto-discovered `~/.ssh/id_ed25519`
+4. Auto-discovered `~/.ssh/id_rsa`
+5. Password fallback — `:password` / `TOMATO_DEPLOY_PASSWORD` (logs a warning on every connect)
+
+> **Security notice.** For anything beyond a throw-away lab host, **use SSH key authentication**. The password path logs a Logger warning on every deploy and passes credentials in plaintext to Erlang `:ssh.connect/3`. If you must use password auth, use a dedicated low-privilege deploy user, restrict the target host to your LAN/VPN, and rotate the password on every shared machine.
 
 To deploy generated configs to a NixOS machine, set your target via environment variables or `config/deploy.secret.exs`:
 
@@ -178,7 +263,9 @@ To deploy generated configs to a NixOS machine, set your target via environment 
 export TOMATO_DEPLOY_HOST=your-nixos-host
 export TOMATO_DEPLOY_PORT=22
 export TOMATO_DEPLOY_USER=root
-export TOMATO_DEPLOY_PASSWORD=your-password
+export TOMATO_DEPLOY_IDENTITY_FILE=~/.ssh/id_ed25519   # recommended
+# or — legacy password auth:
+# export TOMATO_DEPLOY_PASSWORD=your-password
 ```
 
 Or copy the example file:
@@ -193,22 +280,39 @@ See `config/deploy.secret.exs.example` for the format. This file is gitignored.
 
 ```
 lib/tomato/
-  node.ex              # Node struct — :input, :output, :leaf, :gateway (+ machine meta)
+  node.ex              # Node struct — :input/:output/:leaf/:gateway + target + machine meta
   edge.ex              # Directed edge between nodes on same floor
   subgraph.ex          # Self-contained DAG on a floor
   graph.ex             # Top-level container with subgraphs, OODN registry, backend
   oodn.ex              # Out-of-DAG key-value pair
-  store.ex             # GenServer — in-memory state, JSON persistence, PubSub, history
   constraint.ex        # DAG validation — cycles, structure, edges
-  walker.ex            # Topological traversal + OODN interpolation + machine override
-  backend/
-    flake.ex           # Generates flake.nix with inputs/outputs/nixosConfigurations
-  deploy.ex            # SSH/SFTP upload + nixos-rebuild (switch/test/dry/diff/rollback)
+  walker.ex            # Topological traversal + OODN interpolation + per-machine overlay + target filter
   template_library.ex  # Predefined NixOS + Home Manager templates (leaf + gateway stacks)
-  demo.ex              # Seeds default and multi-machine demo graphs
+  demo.ex              # Seeds default, multi-machine, and home-manager demo graphs
+  backend/
+    flake.ex           # Generates flake.nix with inputs/outputs/nixosConfigurations/homeConfigurations
+  store.ex             # GenServer facade — lifecycle + thin handle_call dispatch
+  store/
+    state.ex           # %State{} struct + history operations (push/undo/redo)
+    mutations.ex       # Pure graph mutations (add/remove/update node, edge, gateway, set_backend)
+    oodn.ex            # Pure OODN mutations (put/remove/update/move)
+    machine.ex         # Pure add/3 for machine gateways (+ oodn_overrides)
+    persistence.ex     # JSON encode/decode + flush_to_disk + peek_graph_name
+    graph_files.ex     # list / load / new / save_as / delete / load_latest_or_create / slugify
+  deploy.ex            # Public deploy API — delegates to the submodules below
+  deploy/
+    config.ex          # merge_config + credential resolution (identity_file > env > ~/.ssh > password)
+    ssh.ex             # connect (key or password auth), disconnect, exec, collect_output
+    sftp.ex            # upload, read_file
+    rebuild.ex         # rebuild_command, apply_config
+    diff.ex            # simple_diff
 
 lib/tomato_web/
-  live/graph_live.ex   # Main LiveView — SVG canvas, sidebar, modals, minimap
+  live/
+    graph_live.ex              # Main LiveView — mount, render, event routing, modals
+    graph_live/
+      canvas_components.ex     # SVG function components — graph_node, edge_line, oodn_node, minimap
+                               #   + style helpers (node_color, node_rect_class, has_content?, ...)
 
 assets/js/
   hooks/graph_canvas.js  # Drag, zoom/pan, long-press context menu, Bezier edges
@@ -245,7 +349,26 @@ mix format              # format code
 
 ## Roadmap
 
-**v0.3 — paying down technical debt before adding features.** Three god modules (`TomatoWeb.GraphLive`, `Tomato.Store`, `Tomato.Deploy`) get split into focused submodules with isolated tests; the deploy layer also gains SSH key authentication and local Nix-fragment validation. Full plan in [docs/REFACTOR_v0.3.md](docs/REFACTOR_v0.3.md). The v0.2 plan that shipped the flake backend, multi-machine support, and Home Manager is archived in [docs/ROADMAP_v0.2.md](docs/ROADMAP_v0.2.md).
+**v0.3 — paying down technical debt + small correctness fixes.** Landed in the current `v0.3` branch:
+
+- ✅ `Tomato.Deploy` split into `Deploy.SSH` / `SFTP` / `Rebuild` / `Diff` / `Config`
+- ✅ SSH public-key authentication (with password fallback)
+- ✅ `Tomato.Store` split into `Store.State` / `Mutations` / `OODN` / `Machine` / `Persistence` / `GraphFiles`
+- ✅ Seeder fix — demo graphs seed independently of each other
+- ✅ Leaf `target` field + walker filter for shared multi-machine fragments
+- ✅ Per-machine `oodn_overrides` overlay
+- ✅ `TomatoWeb.GraphLive` phase 4a — canvas SVG components extracted to `GraphLive.CanvasComponents`
+
+Still pending for v0.3:
+
+- ⏳ Sidebar editor for leaf `target` field
+- ⏳ Scoped OODN panel inside each machine subgraph (visual editor for `oodn_overrides`)
+- ⏳ `TomatoWeb.GraphLive` phase 4b — modal components extracted to `GraphLive.ModalComponents`
+- ⏳ `TomatoWeb.GraphLive` phase 4c — handle_event dispatch split into per-domain handler modules
+- ⏳ Local Nix-fragment validation (`nix-instantiate --parse` on each leaf before write)
+- ⏳ Windows dev-server zombie BEAM on restart (install a shutdown signal handler in `Tomato.Application`)
+
+Full plan and scoring in [docs/REFACTOR_v0.3.md](docs/REFACTOR_v0.3.md). The v0.2 plan that shipped the flake backend, multi-machine support, and Home Manager is archived in [docs/ROADMAP_v0.2.md](docs/ROADMAP_v0.2.md).
 
 ## License
 
