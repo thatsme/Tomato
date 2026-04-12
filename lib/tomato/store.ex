@@ -126,6 +126,24 @@ defmodule Tomato.Store do
     GenServer.call(server, {:add_machine, subgraph_id, attrs})
   end
 
+  @doc "Undo the last mutation."
+  @spec undo(server()) :: :ok | {:error, :no_history}
+  def undo(server \\ __MODULE__) do
+    GenServer.call(server, :undo)
+  end
+
+  @doc "Redo the last undone mutation."
+  @spec redo(server()) :: :ok | {:error, :no_redo}
+  def redo(server \\ __MODULE__) do
+    GenServer.call(server, :redo)
+  end
+
+  @doc "Returns {undo_count, redo_count}."
+  @spec history_status(server()) :: {non_neg_integer(), non_neg_integer()}
+  def history_status(server \\ __MODULE__) do
+    GenServer.call(server, :history_status)
+  end
+
   @doc "Set the graph backend (:traditional or :flake)."
   @spec set_backend(server(), Graph.backend()) :: :ok
   def set_backend(server \\ __MODULE__, backend) when backend in [:traditional, :flake] do
@@ -148,8 +166,15 @@ defmodule Tomato.Store do
     # Try to load most recent graph, or create default
     {graph, file_path} = load_latest_or_create(graphs_dir)
 
-    {:ok, %{graph: graph, file_path: file_path, graphs_dir: graphs_dir, flush_ref: nil},
-     {:continue, :maybe_seed}}
+    {:ok,
+     %{
+       graph: graph,
+       file_path: file_path,
+       graphs_dir: graphs_dir,
+       flush_ref: nil,
+       undo_stack: [],
+       redo_stack: []
+     }, {:continue, :maybe_seed}}
   end
 
   @impl true
@@ -251,7 +276,7 @@ defmodule Tomato.Store do
       node = Node.new(node_attrs)
       new_sg = Subgraph.add_node(sg, node)
       graph = Graph.put_subgraph(state.graph, new_sg)
-      state = schedule_flush(%{state | graph: graph})
+      state = schedule_flush(%{push_history(state) | graph: graph})
       broadcast(graph)
       {:reply, {:ok, node}, state}
     else
@@ -265,7 +290,7 @@ defmodule Tomato.Store do
          :ok <- validate_deletable(node) do
       new_sg = Subgraph.remove_node(sg, node_id)
       graph = Graph.put_subgraph(state.graph, new_sg)
-      state = schedule_flush(%{state | graph: graph})
+      state = schedule_flush(%{push_history(state) | graph: graph})
       broadcast(graph)
       {:reply, :ok, state}
     else
@@ -277,7 +302,7 @@ defmodule Tomato.Store do
     with {:ok, sg} <- fetch_subgraph(state.graph, subgraph_id) do
       new_sg = Subgraph.update_node(sg, node_id, updates)
       graph = Graph.put_subgraph(state.graph, new_sg)
-      state = schedule_flush(%{state | graph: graph})
+      state = schedule_flush(%{push_history(state) | graph: graph})
       broadcast(graph)
       {:reply, :ok, state}
     else
@@ -293,7 +318,7 @@ defmodule Tomato.Store do
       case Constraint.topological_sort(new_sg) do
         {:ok, _} ->
           graph = Graph.put_subgraph(state.graph, new_sg)
-          state = schedule_flush(%{state | graph: graph})
+          state = schedule_flush(%{push_history(state) | graph: graph})
           broadcast(graph)
           {:reply, {:ok, edge}, state}
 
@@ -309,7 +334,7 @@ defmodule Tomato.Store do
     with {:ok, sg} <- fetch_subgraph(state.graph, subgraph_id) do
       new_sg = Subgraph.remove_edge(sg, edge_id)
       graph = Graph.put_subgraph(state.graph, new_sg)
-      state = schedule_flush(%{state | graph: graph})
+      state = schedule_flush(%{push_history(state) | graph: graph})
       broadcast(graph)
       {:reply, :ok, state}
     else
@@ -336,7 +361,7 @@ defmodule Tomato.Store do
         |> Graph.put_subgraph(new_sg)
         |> Graph.put_subgraph(child_sg)
 
-      state = schedule_flush(%{state | graph: graph})
+      state = schedule_flush(%{push_history(state) | graph: graph})
       broadcast(graph)
       {:reply, {:ok, gateway_node, child_sg}, state}
     else
@@ -353,7 +378,7 @@ defmodule Tomato.Store do
         updated_at: DateTime.to_iso8601(DateTime.utc_now())
     }
 
-    state = schedule_flush(%{state | graph: graph})
+    state = schedule_flush(%{push_history(state) | graph: graph})
     broadcast(graph)
     {:reply, {:ok, oodn}, state}
   end
@@ -365,7 +390,7 @@ defmodule Tomato.Store do
         updated_at: DateTime.to_iso8601(DateTime.utc_now())
     }
 
-    state = schedule_flush(%{state | graph: graph})
+    state = schedule_flush(%{push_history(state) | graph: graph})
     broadcast(graph)
     {:reply, :ok, state}
   end
@@ -384,7 +409,7 @@ defmodule Tomato.Store do
             updated_at: DateTime.to_iso8601(DateTime.utc_now())
         }
 
-        state = schedule_flush(%{state | graph: graph})
+        state = schedule_flush(%{push_history(state) | graph: graph})
         broadcast(graph)
         {:reply, :ok, state}
     end
@@ -419,7 +444,7 @@ defmodule Tomato.Store do
         |> Graph.put_subgraph(new_sg)
         |> Graph.put_subgraph(child_sg)
 
-      state = schedule_flush(%{state | graph: graph})
+      state = schedule_flush(%{push_history(state) | graph: graph})
       broadcast(graph)
       {:reply, {:ok, machine_node, child_sg}, state}
     else
@@ -427,14 +452,57 @@ defmodule Tomato.Store do
     end
   end
 
+  def handle_call(:undo, _from, state) do
+    case state.undo_stack do
+      [prev | rest] ->
+        new_state = %{
+          state
+          | graph: prev,
+            undo_stack: rest,
+            redo_stack: [state.graph | state.redo_stack]
+        }
+
+        new_state = schedule_flush(new_state)
+        broadcast(prev)
+        {:reply, :ok, new_state}
+
+      [] ->
+        {:reply, {:error, :no_history}, state}
+    end
+  end
+
+  def handle_call(:redo, _from, state) do
+    case state.redo_stack do
+      [next | rest] ->
+        new_state = %{
+          state
+          | graph: next,
+            redo_stack: rest,
+            undo_stack: [state.graph | state.undo_stack]
+        }
+
+        new_state = schedule_flush(new_state)
+        broadcast(next)
+        {:reply, :ok, new_state}
+
+      [] ->
+        {:reply, {:error, :no_redo}, state}
+    end
+  end
+
+  def handle_call(:history_status, _from, state) do
+    {:reply, {length(state.undo_stack), length(state.redo_stack)}, state}
+  end
+
   def handle_call({:set_backend, backend}, _from, state) do
     graph = %{state.graph | backend: backend}
-    state = schedule_flush(%{state | graph: graph})
+    state = schedule_flush(%{push_history(state) | graph: graph})
     broadcast(graph)
     {:reply, :ok, state}
   end
 
   def handle_call({:move_oodn, position}, _from, state) do
+    # OODN position drag is purely visual — don't pollute undo history
     graph = %{state.graph | oodn_position: position}
     state = schedule_flush(%{state | graph: graph})
     broadcast(graph)
@@ -468,6 +536,16 @@ defmodule Tomato.Store do
   end
 
   defp validate_deletable(_node), do: :ok
+
+  @history_limit 50
+
+  defp push_history(state) do
+    %{
+      state
+      | undo_stack: [state.graph | state.undo_stack] |> Enum.take(@history_limit),
+        redo_stack: []
+    }
+  end
 
   defp schedule_flush(state) do
     if state.flush_ref, do: Process.cancel_timer(state.flush_ref)

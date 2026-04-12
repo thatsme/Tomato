@@ -25,6 +25,9 @@ defmodule TomatoWeb.GraphLive do
      |> assign(:editing_content_node_id, nil)
      |> assign(:editing_oodn, false)
      |> assign(:show_template_picker, false)
+     |> assign(:search_query, "")
+     |> assign(:search_results, [])
+     |> assign(:history_status, Store.history_status())
      |> assign(:show_generated, false)
      |> assign(:generated_output, "")
      |> assign(:generated_path, nil)
@@ -78,7 +81,8 @@ defmodule TomatoWeb.GraphLive do
     {:noreply,
      socket
      |> assign(:graph, graph)
-     |> assign(:subgraph, subgraph || socket.assigns.subgraph)}
+     |> assign(:subgraph, subgraph || socket.assigns.subgraph)
+     |> assign(:history_status, Store.history_status())}
   end
 
   # --- Events ---
@@ -370,6 +374,106 @@ defmodule TomatoWeb.GraphLive do
     )
 
     {:noreply, socket}
+  end
+
+  # --- Undo / Redo ---
+
+  def handle_event("undo", _params, socket) do
+    Store.undo()
+    {:noreply, socket}
+  end
+
+  def handle_event("redo", _params, socket) do
+    Store.redo()
+    {:noreply, socket}
+  end
+
+  # --- Search ---
+
+  def handle_event("search_nodes", %{"q" => query}, socket) do
+    results =
+      if String.trim(query) == "" do
+        []
+      else
+        search_graph(socket.assigns.graph, query)
+      end
+
+    {:noreply,
+     socket
+     |> assign(:search_query, query)
+     |> assign(:search_results, results)}
+  end
+
+  def handle_event("goto_search_result", %{"subgraph-id" => sg_id, "node-id" => node_id}, socket) do
+    subgraph = Graph.get_subgraph(socket.assigns.graph, sg_id)
+
+    if subgraph do
+      breadcrumb = build_breadcrumb_to(socket.assigns.graph, sg_id)
+
+      {:noreply,
+       socket
+       |> assign(:subgraph, subgraph)
+       |> assign(:breadcrumb, breadcrumb)
+       |> assign(:selected_node_id, node_id)
+       |> assign(:search_query, "")
+       |> assign(:search_results, [])}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  defp search_graph(graph, query) do
+    q = String.downcase(query)
+
+    graph.subgraphs
+    |> Enum.flat_map(fn {sg_id, sg} ->
+      sg.nodes
+      |> Enum.filter(fn {_id, node} -> matches_search?(node, q) end)
+      |> Enum.map(fn {_id, node} ->
+        %{node: node, subgraph_id: sg_id, subgraph_name: sg.name}
+      end)
+    end)
+    |> Enum.take(50)
+  end
+
+  defp matches_search?(node, q) do
+    String.contains?(String.downcase(node.name), q) ||
+      (is_binary(node.content) && String.contains?(String.downcase(node.content), q))
+  end
+
+  defp build_breadcrumb_to(graph, target_sg_id) do
+    # Walk from root looking for path to target subgraph
+    root_id = graph.root_subgraph_id
+    root = graph.subgraphs[root_id]
+    initial = [{root_id, root.name}]
+
+    case find_path(graph, root, target_sg_id, initial) do
+      nil -> initial
+      path -> path
+    end
+  end
+
+  defp find_path(_graph, sg, target_id, acc) when sg.id == target_id, do: acc
+
+  defp find_path(graph, sg, target_id, acc) do
+    sg.nodes
+    |> Map.values()
+    |> Enum.find_value(fn node ->
+      if node.type == :gateway && is_binary(node.subgraph_id) do
+        case Graph.get_subgraph(graph, node.subgraph_id) do
+          nil ->
+            nil
+
+          child_sg ->
+            new_acc = acc ++ [{child_sg.id, child_sg.name}]
+
+            cond do
+              child_sg.id == target_id -> new_acc
+              true -> find_path(graph, child_sg, target_id, new_acc)
+            end
+        end
+      end
+    end)
   end
 
   # --- Backend toggle ---
@@ -690,6 +794,25 @@ defmodule TomatoWeb.GraphLive do
               Generate
             </button>
           </div>
+          <%!-- Undo/Redo --%>
+          <div class="flex items-center gap-1 mt-2">
+            <button
+              class={["btn btn-xs btn-ghost flex-1", elem(@history_status, 0) == 0 && "btn-disabled"]}
+              phx-click="undo"
+              title="Undo (Cmd+Z)"
+              disabled={elem(@history_status, 0) == 0}
+            >
+              ↶ Undo ({elem(@history_status, 0)})
+            </button>
+            <button
+              class={["btn btn-xs btn-ghost flex-1", elem(@history_status, 1) == 0 && "btn-disabled"]}
+              phx-click="redo"
+              title="Redo (Cmd+Shift+Z)"
+              disabled={elem(@history_status, 1) == 0}
+            >
+              Redo ({elem(@history_status, 1)}) ↷
+            </button>
+          </div>
         </div>
 
         <%!-- Breadcrumb --%>
@@ -724,8 +847,54 @@ defmodule TomatoWeb.GraphLive do
           </button>
         </div>
 
-        <%!-- Node List --%>
-        <div class="flex-1 overflow-y-auto p-3">
+        <%!-- Search --%>
+        <div class="p-3 border-b border-base-300">
+          <form phx-change="search_nodes" phx-submit="search_nodes">
+            <input
+              type="text"
+              name="q"
+              value={@search_query}
+              placeholder="Search nodes..."
+              class="input input-xs input-bordered w-full"
+              phx-debounce="200"
+            />
+          </form>
+        </div>
+
+        <%!-- Search results (when searching) --%>
+        <div :if={@search_query != "" && @search_results != []} class="flex-1 overflow-y-auto p-3">
+          <h3 class="text-xs font-semibold text-base-content/60 mb-2 uppercase">
+            Results ({length(@search_results)})
+          </h3>
+          <div class="space-y-1">
+            <div
+              :for={result <- @search_results}
+              class="flex items-center gap-2 px-2 py-1.5 rounded text-sm cursor-pointer hover:bg-base-200"
+              phx-click="goto_search_result"
+              phx-value-subgraph-id={result.subgraph_id}
+              phx-value-node-id={result.node.id}
+            >
+              <span class={["w-2 h-2 rounded-full shrink-0", node_color(result.node.type)]} />
+              <div class="flex-1 min-w-0">
+                <div class="truncate">{result.node.name}</div>
+                <div class="text-xs text-base-content/40 truncate">in {result.subgraph_name}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <%!-- Empty results --%>
+        <div
+          :if={@search_query != "" && @search_results == []}
+          class="flex-1 overflow-y-auto p-3"
+        >
+          <div class="text-xs text-base-content/40 text-center py-4">
+            No nodes match "{@search_query}"
+          </div>
+        </div>
+
+        <%!-- Node List (when not searching) --%>
+        <div :if={@search_query == ""} class="flex-1 overflow-y-auto p-3">
           <h3 class="text-xs font-semibold text-base-content/60 mb-2 uppercase">Nodes</h3>
           <div class="space-y-1">
             <div
@@ -931,6 +1100,9 @@ defmodule TomatoWeb.GraphLive do
             position={@graph.oodn_position || %{x: 600, y: 80}}
           />
         </svg>
+
+        <%!-- Minimap --%>
+        <.minimap subgraph={@subgraph} />
       </div>
 
       <%!-- Content Editor Modal --%>
@@ -967,6 +1139,80 @@ defmodule TomatoWeb.GraphLive do
     """
   end
 
+  # --- Minimap ---
+
+  attr :subgraph, :map, required: true
+
+  defp minimap(assigns) do
+    nodes = Map.values(assigns.subgraph.nodes)
+
+    {min_x, max_x, min_y, max_y} =
+      if nodes == [] do
+        {0, 800, 0, 600}
+      else
+        xs = Enum.map(nodes, & &1.position.x)
+        ys = Enum.map(nodes, & &1.position.y)
+        {Enum.min(xs) - 100, Enum.max(xs) + 100, Enum.min(ys) - 100, Enum.max(ys) + 100}
+      end
+
+    width = max(max_x - min_x, 100)
+    height = max(max_y - min_y, 100)
+
+    assigns =
+      assigns
+      |> assign(:nodes, nodes)
+      |> assign(:vb_x, min_x)
+      |> assign(:vb_y, min_y)
+      |> assign(:vb_w, width)
+      |> assign(:vb_h, height)
+
+    ~H"""
+    <div class="absolute bottom-4 right-4 z-10 bg-base-100/90 border border-base-300 rounded-lg shadow-lg p-1">
+      <div class="text-[9px] text-base-content/40 px-1 mb-0.5 font-semibold uppercase">
+        Minimap
+      </div>
+      <svg
+        width="180"
+        height="120"
+        viewBox={"#{@vb_x} #{@vb_y} #{@vb_w} #{@vb_h}"}
+        class="bg-base-200 rounded"
+      >
+        <%!-- Edges --%>
+        <line
+          :for={{_id, edge} <- @subgraph.edges}
+          x1={(Map.get(@subgraph.nodes, edge.from) || %{position: %{x: 0}}).position.x}
+          y1={(Map.get(@subgraph.nodes, edge.from) || %{position: %{y: 0}}).position.y}
+          x2={(Map.get(@subgraph.nodes, edge.to) || %{position: %{x: 0}}).position.x}
+          y2={(Map.get(@subgraph.nodes, edge.to) || %{position: %{y: 0}}).position.y}
+          stroke="currentColor"
+          stroke-width="2"
+          opacity="0.3"
+        />
+        <%!-- Nodes --%>
+        <rect
+          :for={node <- @nodes}
+          x={node.position.x - 30}
+          y={node.position.y - 15}
+          width="60"
+          height="30"
+          rx="4"
+          fill={minimap_color(node)}
+          opacity="0.7"
+        />
+      </svg>
+    </div>
+    """
+  end
+
+  defp minimap_color(%{type: :input}), do: "#10b981"
+  defp minimap_color(%{type: :output}), do: "#ef4444"
+
+  defp minimap_color(%{type: :gateway} = node) do
+    if Tomato.Node.machine?(node), do: "#d97706", else: "#a855f7"
+  end
+
+  defp minimap_color(_), do: "#06b6d4"
+
   # --- SVG Components ---
 
   attr :node, :map, required: true
@@ -975,7 +1221,14 @@ defmodule TomatoWeb.GraphLive do
 
   defp graph_node(assigns) do
     is_machine = Tomato.Node.machine?(assigns.node)
-    assigns = assign(assigns, :is_machine, is_machine)
+    has_preview = assigns.node.type == :leaf && has_content?(assigns.node)
+    preview_lines = if has_preview, do: content_preview(assigns.node.content, 3), else: []
+
+    assigns =
+      assigns
+      |> assign(:is_machine, is_machine)
+      |> assign(:has_preview, has_preview)
+      |> assign(:preview_lines, preview_lines)
 
     ~H"""
     <g
@@ -987,7 +1240,7 @@ defmodule TomatoWeb.GraphLive do
       phx-click="select_node"
       phx-value-node-id={@node.id}
     >
-      <%!-- Machine node: wider, distinct style --%>
+      <%!-- Machine node --%>
       <rect
         :if={@is_machine}
         x="-80"
@@ -999,9 +1252,22 @@ defmodule TomatoWeb.GraphLive do
         stroke="#d97706"
         stroke-width={if @selected, do: "3", else: "2"}
       />
-      <%!-- Regular node --%>
+      <%!-- Leaf with preview (taller) --%>
       <rect
-        :if={!@is_machine}
+        :if={!@is_machine && @has_preview}
+        x="-80"
+        y="-30"
+        width="160"
+        height="80"
+        rx="6"
+        class={[
+          "stroke-2 transition-colors",
+          node_rect_class(@node.type, @selected)
+        ]}
+      />
+      <%!-- Regular node (no preview) --%>
+      <rect
+        :if={!@is_machine && !@has_preview}
         x="-60"
         y="-20"
         width="120"
@@ -1046,14 +1312,16 @@ defmodule TomatoWeb.GraphLive do
       />
       <%!-- Content indicator for leaf nodes --%>
       <circle
-        :if={@node.type == :leaf && has_content?(@node)}
-        cx="42"
-        cy="-10"
+        :if={@node.type == :leaf && @has_preview}
+        cx="62"
+        cy="-20"
         r="4"
         class="fill-success stroke-success/50"
         stroke-width="1"
       />
+      <%!-- Node name --%>
       <text
+        :if={!@has_preview}
         text-anchor="middle"
         dominant-baseline={if @is_machine, do: "auto", else: "central"}
         y={if @is_machine, do: "-3", else: "0"}
@@ -1064,8 +1332,59 @@ defmodule TomatoWeb.GraphLive do
       >
         {@node.name}
       </text>
+      <%!-- Leaf with preview: name at top, content below --%>
+      <text
+        :if={@has_preview}
+        x="-72"
+        y="-15"
+        font-size="11"
+        font-weight="bold"
+        class={["select-none pointer-events-none", node_text_class(@selected)]}
+      >
+        {@node.name}
+      </text>
+      <text
+        :for={{line, idx} <- Enum.with_index(@preview_lines)}
+        :if={@has_preview}
+        x="-72"
+        y={3 + idx * 13}
+        font-size="9"
+        font-family="monospace"
+        opacity="0.65"
+        class={["select-none pointer-events-none", node_text_class(@selected)]}
+      >
+        {line}
+      </text>
     </g>
     """
+  end
+
+  defp content_preview(nil, _), do: []
+
+  defp content_preview(content, max_lines) do
+    content
+    |> String.split("\n")
+    |> Enum.reject(&(String.trim(&1) == ""))
+    |> Enum.take(max_lines)
+    |> Enum.map(&truncate_line/1)
+  end
+
+  defp truncate_line(line) do
+    trimmed = String.trim_leading(line)
+
+    if String.length(trimmed) > 22 do
+      String.slice(trimmed, 0, 20) <> ".."
+    else
+      trimmed
+    end
+  end
+
+  defp node_half_width(node) do
+    cond do
+      Tomato.Node.machine?(node) -> 80
+      node.type == :leaf && has_content?(node) -> 80
+      true -> 60
+    end
   end
 
   attr :edge, :map, required: true
@@ -1077,9 +1396,9 @@ defmodule TomatoWeb.GraphLive do
 
     path_d =
       if from_node && to_node do
-        x1 = from_node.position.x + 60
+        x1 = from_node.position.x + node_half_width(from_node)
         y1 = from_node.position.y
-        x2 = to_node.position.x - 60
+        x2 = to_node.position.x - node_half_width(to_node)
         y2 = to_node.position.y
         dx = abs(x2 - x1)
         offset = max(dx * 0.5, 80)
