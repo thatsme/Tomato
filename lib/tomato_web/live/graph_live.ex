@@ -7,7 +7,7 @@ defmodule TomatoWeb.GraphLive do
   import TomatoWeb.GraphLive.SidebarComponents
 
   alias Tomato.{Store, Graph}
-  alias TomatoWeb.GraphLive.NodeHandlers
+  alias TomatoWeb.GraphLive.{EdgeHandlers, NodeHandlers}
 
   @impl true
   def mount(_params, session, socket) do
@@ -203,18 +203,14 @@ defmodule TomatoWeb.GraphLive do
   def handle_event("delete_node", params, socket),
     do: NodeHandlers.delete(params, socket)
 
-  def handle_event("delete_edge", %{"edge-id" => edge_id}, socket) do
-    Store.remove_edge(store(socket), socket.assigns.subgraph.id, edge_id)
-    {:noreply, socket}
-  end
+  def handle_event("delete_edge", params, socket),
+    do: EdgeHandlers.delete(params, socket)
 
-  def handle_event("start_connect", %{"node-id" => node_id}, socket) do
-    {:noreply, assign(socket, :connecting_from, node_id)}
-  end
+  def handle_event("start_connect", params, socket),
+    do: EdgeHandlers.start_connect(params, socket)
 
-  def handle_event("cancel_connect", _params, socket) do
-    {:noreply, assign(socket, :connecting_from, nil)}
-  end
+  def handle_event("cancel_connect", params, socket),
+    do: EdgeHandlers.cancel_connect(params, socket)
 
   def handle_event("enter_gateway", %{"node-id" => node_id}, socket) do
     sg = socket.assigns.subgraph
@@ -622,38 +618,17 @@ defmodule TomatoWeb.GraphLive do
 
   # --- Context menu actions ---
 
-  def handle_event("start_connect_to", %{"node-id" => node_id}, socket) do
-    {:noreply, assign(socket, :connecting_to, node_id)}
-  end
+  def handle_event("start_connect_to", params, socket),
+    do: EdgeHandlers.start_connect_to(params, socket)
 
   def handle_event("duplicate_node", params, socket),
     do: NodeHandlers.duplicate(params, socket)
 
-  def handle_event("disconnect_node", %{"node-id" => node_id}, socket) do
-    sg = socket.assigns.subgraph
+  def handle_event("disconnect_node", params, socket),
+    do: EdgeHandlers.disconnect(params, socket)
 
-    sg.edges
-    |> Enum.filter(fn {_id, edge} -> edge.from == node_id or edge.to == node_id end)
-    |> Enum.each(fn {edge_id, _edge} ->
-      Store.remove_edge(store(socket), sg.id, edge_id)
-    end)
-
-    {:noreply, socket}
-  end
-
-  def handle_event("reverse_edge", %{"edge-id" => edge_id}, socket) do
-    sg = socket.assigns.subgraph
-
-    case Map.get(sg.edges, edge_id) do
-      nil ->
-        {:noreply, socket}
-
-      edge ->
-        Store.remove_edge(store(socket), sg.id, edge_id)
-        Store.add_edge(store(socket), sg.id, edge.to, edge.from)
-        {:noreply, socket}
-    end
-  end
+  def handle_event("reverse_edge", params, socket),
+    do: EdgeHandlers.reverse(params, socket)
 
   def handle_event("start_rename", params, socket),
     do: NodeHandlers.start_rename(params, socket)
