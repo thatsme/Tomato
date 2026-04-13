@@ -21,6 +21,7 @@ defmodule Tomato.Walker do
   @type validation_error :: %{
           node_id: String.t(),
           node_name: String.t(),
+          subgraph_id: String.t(),
           reason: String.t()
         }
 
@@ -251,10 +252,13 @@ defmodule Tomato.Walker do
     errors =
       root
       |> collect_leaf_fragments_with_ids(graph, oodn)
-      |> Enum.flat_map(fn {id, name, fragment} ->
+      |> Enum.flat_map(fn {id, name, sg_id, fragment} ->
         case NixValidator.validate_fragment(fragment) do
-          :ok -> []
-          {:error, reason} -> [%{node_id: id, node_name: name, reason: reason}]
+          :ok ->
+            []
+
+          {:error, reason} ->
+            [%{node_id: id, node_name: name, subgraph_id: sg_id, reason: reason}]
         end
       end)
 
@@ -265,13 +269,13 @@ defmodule Tomato.Walker do
   end
 
   @spec collect_leaf_fragments_with_ids(Subgraph.t(), Graph.t(), map()) ::
-          [{String.t(), String.t(), String.t()}]
+          [{String.t(), String.t(), String.t(), String.t()}]
   defp collect_leaf_fragments_with_ids(%Subgraph{} = sg, %Graph{} = graph, oodn) do
     case Constraint.topological_sort(sg) do
       {:ok, sorted_ids} ->
         Enum.flat_map(sorted_ids, fn node_id ->
           node = Map.get(sg.nodes, node_id)
-          collect_leaf_with_id(node, graph, oodn)
+          collect_leaf_with_id(node, sg.id, graph, oodn)
         end)
 
       {:error, _, _} ->
@@ -281,15 +285,17 @@ defmodule Tomato.Walker do
 
   defp collect_leaf_with_id(
          %{type: :leaf, id: id, name: name, content: content},
+         parent_sg_id,
          _graph,
          oodn
        )
        when is_binary(content) and content != "" do
-    [{id, name, interpolate(String.trim(content), oodn)}]
+    [{id, name, parent_sg_id, interpolate(String.trim(content), oodn)}]
   end
 
   defp collect_leaf_with_id(
          %{type: :gateway, subgraph_id: sg_id, machine: machine},
+         _parent_sg_id,
          graph,
          oodn
        )
@@ -304,6 +310,7 @@ defmodule Tomato.Walker do
 
   defp collect_leaf_with_id(
          %{type: :gateway, subgraph_id: sg_id},
+         _parent_sg_id,
          graph,
          oodn
        )
@@ -314,7 +321,7 @@ defmodule Tomato.Walker do
     end
   end
 
-  defp collect_leaf_with_id(_node, _graph, _oodn), do: []
+  defp collect_leaf_with_id(_node, _parent_sg_id, _graph, _oodn), do: []
 
   @doc """
   Wrap fragments in a NixOS module skeleton.

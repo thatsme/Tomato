@@ -163,6 +163,9 @@ defmodule TomatoWeb.GraphLive do
   def handle_event("goto_search_result", params, socket),
     do: NavigationHandlers.goto_search_result(params, socket)
 
+  def handle_event("navigate_to_node", params, socket),
+    do: NavigationHandlers.navigate_to_node(params, socket)
+
   # --- Backend toggle ---
 
   def handle_event("toggle_backend", params, socket),

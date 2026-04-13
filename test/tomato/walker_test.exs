@@ -83,14 +83,27 @@ defmodule Tomato.WalkerTest do
     end
 
     @tag :nix_cli
-    test "returns error with offending node id and name" do
+    test "returns error with offending node id, name, and containing subgraph" do
       graph = build_graph_with_bad_leaf()
 
       assert {:error, [err]} = Walker.validate(graph)
       assert err.node_name == "Bad"
       assert is_binary(err.node_id)
+      assert err.subgraph_id == graph.root_subgraph_id
       assert err.reason =~ "error"
       refute err.reason =~ System.tmp_dir!()
+    end
+
+    @tag :nix_cli
+    test "attributes a bad leaf inside a gateway to the child subgraph" do
+      graph = build_graph_with_bad_leaf_in_gateway()
+
+      assert {:error, [err]} = Walker.validate(graph)
+      assert err.node_name == "NestedBad"
+      # The offending leaf lives inside the child subgraph — its
+      # subgraph_id must point there, not at the root.
+      refute err.subgraph_id == graph.root_subgraph_id
+      assert Map.has_key?(graph.subgraphs, err.subgraph_id)
     end
 
     @tag :nix_cli
@@ -195,6 +208,38 @@ defmodule Tomato.WalkerTest do
     graph = Graph.put_subgraph(graph, root)
     oodn = Tomato.OODN.new("bad", "@")
     %{graph | oodn_registry: %{oodn.id => oodn}}
+  end
+
+  defp build_graph_with_bad_leaf_in_gateway do
+    graph = Graph.new("nested_bad")
+    root = Graph.root_subgraph(graph)
+    input = Subgraph.input_node(root)
+    output = Subgraph.output_node(root)
+
+    # Child subgraph with the bad leaf inside
+    child = Subgraph.new(name: "child", floor: 1)
+    child_input = Subgraph.input_node(child)
+    child_output = Subgraph.output_node(child)
+    bad = Node.new(type: :leaf, name: "NestedBad", content: "services.openssh.enable = ;")
+    child = Subgraph.add_node(child, bad)
+
+    child =
+      child
+      |> Subgraph.add_edge(Edge.new(child_input.id, bad.id))
+      |> Subgraph.add_edge(Edge.new(bad.id, child_output.id))
+
+    # Gateway on root pointing at the child
+    gateway = Node.new(type: :gateway, name: "GW", subgraph_id: child.id)
+    root = Subgraph.add_node(root, gateway)
+
+    root =
+      root
+      |> Subgraph.add_edge(Edge.new(input.id, gateway.id))
+      |> Subgraph.add_edge(Edge.new(gateway.id, output.id))
+
+    graph
+    |> Graph.put_subgraph(root)
+    |> Graph.put_subgraph(child)
   end
 
   defp build_graph_with_two_bad_leaves do
