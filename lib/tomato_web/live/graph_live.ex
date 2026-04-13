@@ -7,6 +7,7 @@ defmodule TomatoWeb.GraphLive do
   import TomatoWeb.GraphLive.SidebarComponents
 
   alias Tomato.{Store, Graph}
+  alias TomatoWeb.GraphLive.NodeHandlers
 
   @impl true
   def mount(_params, session, socket) do
@@ -168,20 +169,8 @@ defmodule TomatoWeb.GraphLive do
     end
   end
 
-  def handle_event("add_leaf", _params, socket) do
-    sg = socket.assigns.subgraph
-    node_count = map_size(sg.nodes)
-    y = 100 + node_count * 80
-
-    {:ok, _node} =
-      Store.add_node(store(socket), sg.id,
-        type: :leaf,
-        name: "Node #{node_count - 1}",
-        position: %{x: 300, y: y}
-      )
-
-    {:noreply, socket}
-  end
+  def handle_event("add_leaf", params, socket),
+    do: NodeHandlers.add_leaf(params, socket)
 
   def handle_event("add_machine", _params, socket) do
     sg = socket.assigns.subgraph
@@ -199,90 +188,20 @@ defmodule TomatoWeb.GraphLive do
     {:noreply, socket}
   end
 
-  def handle_event("add_gateway", _params, socket) do
-    sg = socket.assigns.subgraph
-    node_count = map_size(sg.nodes)
-    y = 100 + node_count * 80
+  def handle_event("add_gateway", params, socket),
+    do: NodeHandlers.add_gateway(params, socket)
 
-    {:ok, _gateway, _child_sg} =
-      Store.add_gateway(store(socket), sg.id,
-        name: "Gateway #{node_count - 1}",
-        position: %{x: 300, y: y}
-      )
+  def handle_event("add_node_at", params, socket),
+    do: NodeHandlers.add_node_at(params, socket)
 
-    {:noreply, socket}
-  end
+  def handle_event("select_node", params, socket),
+    do: NodeHandlers.select(params, socket)
 
-  def handle_event("add_node_at", %{"type" => type, "x" => x, "y" => y}, socket) do
-    sg = socket.assigns.subgraph
-    node_count = map_size(sg.nodes)
+  def handle_event("deselect", params, socket),
+    do: NodeHandlers.deselect(params, socket)
 
-    case type do
-      "leaf" ->
-        {:ok, _node} =
-          Store.add_node(store(socket), sg.id,
-            type: :leaf,
-            name: "Node #{node_count - 1}",
-            position: %{x: x, y: y}
-          )
-
-        {:noreply, socket}
-
-      "gateway" ->
-        {:ok, _gw, _child} =
-          Store.add_gateway(store(socket), sg.id,
-            name: "Gateway #{node_count - 1}",
-            position: %{x: x, y: y}
-          )
-
-        {:noreply, socket}
-
-      _ ->
-        {:noreply, socket}
-    end
-  end
-
-  def handle_event("select_node", %{"node-id" => node_id}, socket) do
-    cond do
-      socket.assigns.connecting_from ->
-        from_id = socket.assigns.connecting_from
-
-        if from_id != node_id do
-          Store.add_edge(store(socket), socket.assigns.subgraph.id, from_id, node_id)
-        end
-
-        {:noreply, assign(socket, :connecting_from, nil)}
-
-      socket.assigns[:connecting_to] ->
-        to_id = socket.assigns.connecting_to
-
-        if to_id != node_id do
-          Store.add_edge(store(socket), socket.assigns.subgraph.id, node_id, to_id)
-        end
-
-        {:noreply, assign(socket, :connecting_to, nil)}
-
-      true ->
-        {:noreply, assign(socket, :selected_node_id, node_id)}
-    end
-  end
-
-  def handle_event("deselect", _params, socket) do
-    {:noreply,
-     socket
-     |> assign(:selected_node_id, nil)
-     |> assign(:connecting_from, nil)
-     |> assign(:connecting_to, nil)}
-  end
-
-  def handle_event("delete_node", %{"node-id" => node_id}, socket) do
-    Store.remove_node(store(socket), socket.assigns.subgraph.id, node_id)
-
-    {:noreply,
-     socket
-     |> assign(:selected_node_id, nil)
-     |> assign(:editing_content_node_id, nil)}
-  end
+  def handle_event("delete_node", params, socket),
+    do: NodeHandlers.delete(params, socket)
 
   def handle_event("delete_edge", %{"edge-id" => edge_id}, socket) do
     Store.remove_edge(store(socket), socket.assigns.subgraph.id, edge_id)
@@ -340,33 +259,22 @@ defmodule TomatoWeb.GraphLive do
     end
   end
 
-  def handle_event("node_moved", %{"node_id" => node_id, "x" => x, "y" => y}, socket) do
-    Store.update_node(store(socket), socket.assigns.subgraph.id, node_id, position: %{x: x, y: y})
-    {:noreply, socket}
-  end
+  def handle_event("node_moved", params, socket),
+    do: NodeHandlers.moved(params, socket)
 
-  def handle_event("rename_node", %{"node-id" => node_id, "name" => name}, socket) do
-    Store.update_node(store(socket), socket.assigns.subgraph.id, node_id, name: name)
-    {:noreply, socket}
-  end
+  def handle_event("rename_node", params, socket),
+    do: NodeHandlers.rename(params, socket)
 
   # --- Content editing ---
 
-  def handle_event("edit_node_content", %{"node-id" => node_id}, socket) do
-    {:noreply,
-     socket
-     |> assign(:editing_content_node_id, node_id)
-     |> assign(:selected_node_id, node_id)}
-  end
+  def handle_event("edit_node_content", params, socket),
+    do: NodeHandlers.edit_content(params, socket)
 
-  def handle_event("save_content", %{"node-id" => node_id, "content" => content}, socket) do
-    Store.update_node(store(socket), socket.assigns.subgraph.id, node_id, content: content)
-    {:noreply, assign(socket, :editing_content_node_id, nil)}
-  end
+  def handle_event("save_content", params, socket),
+    do: NodeHandlers.save_content(params, socket)
 
-  def handle_event("close_editor", _params, socket) do
-    {:noreply, assign(socket, :editing_content_node_id, nil)}
-  end
+  def handle_event("close_editor", params, socket),
+    do: NodeHandlers.close_editor(params, socket)
 
   # --- Machine ---
 
@@ -718,22 +626,8 @@ defmodule TomatoWeb.GraphLive do
     {:noreply, assign(socket, :connecting_to, node_id)}
   end
 
-  def handle_event("duplicate_node", %{"node-id" => node_id}, socket) do
-    sg = socket.assigns.subgraph
-    node = Map.get(sg.nodes, node_id)
-
-    if node do
-      {:ok, _new_node} =
-        Store.add_node(store(socket), sg.id,
-          type: node.type,
-          name: node.name <> " (copy)",
-          content: node.content,
-          position: %{x: node.position.x + 40, y: node.position.y + 40}
-        )
-    end
-
-    {:noreply, socket}
-  end
+  def handle_event("duplicate_node", params, socket),
+    do: NodeHandlers.duplicate(params, socket)
 
   def handle_event("disconnect_node", %{"node-id" => node_id}, socket) do
     sg = socket.assigns.subgraph
@@ -761,10 +655,12 @@ defmodule TomatoWeb.GraphLive do
     end
   end
 
-  def handle_event("start_rename", %{"node-id" => node_id}, socket) do
-    {:noreply, assign(socket, :selected_node_id, node_id)}
-  end
+  def handle_event("start_rename", params, socket),
+    do: NodeHandlers.start_rename(params, socket)
 
+  # Canvas event plumbing — phx-click="stop_propagation" on the sidebar wrapper
+  # prevents clicks inside the sidebar from bubbling to the outer `deselect`
+  # handler. Not a domain handler, stays inline.
   def handle_event("stop_propagation", _params, socket) do
     {:noreply, socket}
   end
