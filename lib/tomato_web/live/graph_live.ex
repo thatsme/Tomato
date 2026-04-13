@@ -7,7 +7,14 @@ defmodule TomatoWeb.GraphLive do
   import TomatoWeb.GraphLive.SidebarComponents
 
   alias Tomato.{Store, Graph}
-  alias TomatoWeb.GraphLive.{EdgeHandlers, NavigationHandlers, NodeHandlers}
+
+  alias TomatoWeb.GraphLive.{
+    EdgeHandlers,
+    MachineHandlers,
+    NavigationHandlers,
+    NodeHandlers,
+    OodnHandlers
+  }
 
   @impl true
   def mount(_params, session, socket) do
@@ -237,26 +244,8 @@ defmodule TomatoWeb.GraphLive do
 
   # --- Machine ---
 
-  def handle_event("update_machine", params, socket) do
-    node_id = params["node-id"]
-
-    machine_type = if params["type"] == "home_manager", do: :home_manager, else: :nixos
-
-    machine = %{
-      hostname: params["hostname"],
-      system: params["system"],
-      state_version: params["state_version"],
-      type: machine_type,
-      username: params["username"] || "user"
-    }
-
-    Store.update_node(store(socket), socket.assigns.subgraph.id, node_id,
-      machine: machine,
-      name: params["hostname"]
-    )
-
-    {:noreply, socket}
-  end
+  def handle_event("update_machine", params, socket),
+    do: MachineHandlers.update(params, socket)
 
   # --- Undo / Redo ---
 
@@ -471,33 +460,23 @@ defmodule TomatoWeb.GraphLive do
 
   # --- OODN ---
 
-  def handle_event("select_oodn", _params, socket) do
-    {:noreply, assign(socket, :editing_oodn, true)}
-  end
+  def handle_event("select_oodn", params, socket),
+    do: OodnHandlers.select(params, socket)
 
-  def handle_event("close_oodn_editor", _params, socket) do
-    {:noreply, assign(socket, :editing_oodn, false)}
-  end
+  def handle_event("close_oodn_editor", params, socket),
+    do: OodnHandlers.close_editor(params, socket)
 
-  def handle_event("add_oodn", %{"key" => key, "value" => value}, socket) do
-    Store.put_oodn(store(socket), key, value)
-    {:noreply, socket}
-  end
+  def handle_event("add_oodn", params, socket),
+    do: OodnHandlers.add(params, socket)
 
-  def handle_event("update_oodn", %{"oodn-id" => oodn_id, "value" => value}, socket) do
-    Store.update_oodn(store(socket), oodn_id, value)
-    {:noreply, socket}
-  end
+  def handle_event("update_oodn", params, socket),
+    do: OodnHandlers.update(params, socket)
 
-  def handle_event("remove_oodn", %{"oodn-id" => oodn_id}, socket) do
-    Store.remove_oodn(store(socket), oodn_id)
-    {:noreply, socket}
-  end
+  def handle_event("remove_oodn", params, socket),
+    do: OodnHandlers.remove(params, socket)
 
-  def handle_event("oodn_moved", %{"x" => x, "y" => y}, socket) do
-    Store.move_oodn(store(socket), %{x: x, y: y})
-    {:noreply, socket}
-  end
+  def handle_event("oodn_moved", params, socket),
+    do: OodnHandlers.move(params, socket)
 
   # --- Context menu actions ---
 
