@@ -2,20 +2,38 @@ defmodule TomatoWeb.GraphLive do
   @moduledoc "Main LiveView for the graph editor."
   use TomatoWeb, :live_view
 
+  import TomatoWeb.GraphLive.CanvasComponents
+  import TomatoWeb.GraphLive.ModalComponents
+  import TomatoWeb.GraphLive.SidebarComponents
+
   alias Tomato.{Store, Graph}
 
+  alias TomatoWeb.GraphLive.{
+    DeployHandlers,
+    EdgeHandlers,
+    GraphStateHandlers,
+    MachineHandlers,
+    NavigationHandlers,
+    NodeHandlers,
+    OodnHandlers,
+    TemplateHandlers
+  }
+
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(_params, session, socket) do
+    store = Map.get(session, "store", Tomato.Store)
+
     if connected?(socket) do
-      Phoenix.PubSub.subscribe(Tomato.PubSub, "graph:updates")
+      Phoenix.PubSub.subscribe(Tomato.PubSub, Store.topic(store))
     end
 
-    graph = Store.get_graph()
+    graph = Store.get_graph(store)
     root_id = graph.root_subgraph_id
     subgraph = Graph.get_subgraph(graph, root_id)
 
     {:ok,
      socket
+     |> assign(:store, store)
      |> assign(:graph, graph)
      |> assign(:subgraph, subgraph)
      |> assign(:breadcrumb, [{root_id, subgraph.name}])
@@ -27,53 +45,27 @@ defmodule TomatoWeb.GraphLive do
      |> assign(:show_template_picker, false)
      |> assign(:search_query, "")
      |> assign(:search_results, [])
-     |> assign(:history_status, Store.history_status())
+     |> assign(:history_status, Store.history_status(store))
      |> assign(:show_generated, false)
      |> assign(:generated_output, "")
      |> assign(:generated_path, nil)
+     |> assign(:validation_result, :disabled)
      |> assign(:deploy_status, nil)
      |> assign(:deploy_output, "")
      |> assign(:show_graph_manager, false)
      |> assign(:graph_list, [])
-     |> assign(:current_file, Store.current_file())
+     |> assign(:current_file, Store.current_file(store))
      |> assign(:page_title, "Graph Editor")}
   end
 
   @impl true
-  def handle_info({:deploy_result, {:ok, output}}, socket) do
-    {:noreply,
-     socket
-     |> assign(:deploy_status, "success")
-     |> assign(:deploy_output, output)}
-  end
+  # Deploy/diff result dispatch — body lives in DeployHandlers, the tuple
+  # envelope is unwrapped here and the bare-socket return is re-wrapped.
+  def handle_info({:deploy_result, result}, socket),
+    do: {:noreply, DeployHandlers.handle_deploy_result(result, socket)}
 
-  def handle_info({:deploy_result, {:error, reason}}, socket) do
-    {:noreply,
-     socket
-     |> assign(:deploy_status, "error")
-     |> assign(:deploy_output, reason)}
-  end
-
-  def handle_info({:diff_result, {:ok, ""}}, socket) do
-    {:noreply,
-     socket
-     |> assign(:deploy_status, "success")
-     |> assign(:deploy_output, "No changes — local config matches the machine.")}
-  end
-
-  def handle_info({:diff_result, {:ok, diff}}, socket) do
-    {:noreply,
-     socket
-     |> assign(:deploy_status, "success")
-     |> assign(:deploy_output, "=== Diff (current vs new) ===\n\n" <> diff)}
-  end
-
-  def handle_info({:diff_result, {:error, reason}}, socket) do
-    {:noreply,
-     socket
-     |> assign(:deploy_status, "error")
-     |> assign(:deploy_output, "Diff failed: " <> reason)}
-  end
+  def handle_info({:diff_result, result}, socket),
+    do: {:noreply, DeployHandlers.handle_diff_result(result, socket)}
 
   def handle_info({:graph_updated, graph}, socket) do
     subgraph = Graph.get_subgraph(graph, socket.assigns.subgraph.id)
@@ -82,674 +74,180 @@ defmodule TomatoWeb.GraphLive do
      socket
      |> assign(:graph, graph)
      |> assign(:subgraph, subgraph || socket.assigns.subgraph)
-     |> assign(:history_status, Store.history_status())}
+     |> assign(:history_status, Store.history_status(socket.assigns.store))}
   end
 
   # --- Events ---
 
   @impl true
-  def handle_event("show_template_picker", _params, socket) do
-    {:noreply, assign(socket, :show_template_picker, true)}
-  end
+  def handle_event("show_template_picker", params, socket),
+    do: TemplateHandlers.open(params, socket)
 
-  def handle_event("close_template_picker", _params, socket) do
-    {:noreply, assign(socket, :show_template_picker, false)}
-  end
+  def handle_event("close_template_picker", params, socket),
+    do: TemplateHandlers.close(params, socket)
 
-  def handle_event("add_from_template", %{"template-id" => template_id}, socket) do
-    sg = socket.assigns.subgraph
-    node_count = map_size(sg.nodes)
-    y = 100 + node_count * 80
+  def handle_event("add_from_template", params, socket),
+    do: TemplateHandlers.add(params, socket)
 
-    template = Tomato.TemplateLibrary.get(template_id)
+  def handle_event("add_leaf", params, socket),
+    do: NodeHandlers.add_leaf(params, socket)
 
-    if template do
-      case Map.get(template, :type, :leaf) do
-        :gateway ->
-          # Create gateway with pre-populated child nodes
-          {:ok, gw, child} =
-            Store.add_gateway(sg.id,
-              name: template.name,
-              position: %{x: 300, y: y}
-            )
+  def handle_event("add_machine", params, socket),
+    do: NodeHandlers.add_machine(params, socket)
 
-          children = Map.get(template, :children, [])
-          child_sg = Store.get_subgraph(child.id)
-          child_input = Tomato.Subgraph.input_node(child_sg)
-          child_output = Tomato.Subgraph.output_node(child_sg)
+  def handle_event("add_gateway", params, socket),
+    do: NodeHandlers.add_gateway(params, socket)
 
-          # Create each child leaf and wire input -> leaf -> output
-          children
-          |> Enum.with_index()
-          |> Enum.each(fn {child_tmpl, idx} ->
-            {:ok, leaf} =
-              Store.add_node(child.id,
-                type: :leaf,
-                name: child_tmpl.name,
-                content: String.trim(child_tmpl.content),
-                position: %{x: 150 + idx * 180, y: 200}
-              )
+  def handle_event("add_node_at", params, socket),
+    do: NodeHandlers.add_node_at(params, socket)
 
-            Store.add_edge(child.id, child_input.id, leaf.id)
-            Store.add_edge(child.id, leaf.id, child_output.id)
-          end)
+  def handle_event("select_node", params, socket),
+    do: NodeHandlers.select(params, socket)
 
-          {:noreply,
-           socket
-           |> assign(:show_template_picker, false)
-           |> assign(:selected_node_id, gw.id)}
+  def handle_event("deselect", params, socket),
+    do: NodeHandlers.deselect(params, socket)
 
-        _ ->
-          # Simple leaf node
-          {:ok, node} =
-            Store.add_node(sg.id,
-              type: :leaf,
-              name: template.name,
-              content: String.trim(template.content),
-              position: %{x: 300, y: y}
-            )
+  def handle_event("delete_node", params, socket),
+    do: NodeHandlers.delete(params, socket)
 
-          {:noreply,
-           socket
-           |> assign(:show_template_picker, false)
-           |> assign(:selected_node_id, node.id)}
-      end
-    else
-      {:noreply, socket}
-    end
-  end
+  def handle_event("delete_edge", params, socket),
+    do: EdgeHandlers.delete(params, socket)
 
-  def handle_event("add_leaf", _params, socket) do
-    sg = socket.assigns.subgraph
-    node_count = map_size(sg.nodes)
-    y = 100 + node_count * 80
+  def handle_event("start_connect", params, socket),
+    do: EdgeHandlers.start_connect(params, socket)
 
-    {:ok, _node} =
-      Store.add_node(sg.id,
-        type: :leaf,
-        name: "Node #{node_count - 1}",
-        position: %{x: 300, y: y}
-      )
+  def handle_event("cancel_connect", params, socket),
+    do: EdgeHandlers.cancel_connect(params, socket)
 
-    {:noreply, socket}
-  end
+  def handle_event("enter_gateway", params, socket),
+    do: NavigationHandlers.enter_gateway(params, socket)
 
-  def handle_event("add_machine", _params, socket) do
-    sg = socket.assigns.subgraph
-    node_count = map_size(sg.nodes)
-    y = 100 + node_count * 80
+  def handle_event("navigate_breadcrumb", params, socket),
+    do: NavigationHandlers.navigate_breadcrumb(params, socket)
 
-    {:ok, _machine, _child} =
-      Store.add_machine(sg.id,
-        hostname: "machine-#{node_count}",
-        system: "aarch64-linux",
-        state_version: "24.11",
-        position: %{x: 300, y: y}
-      )
+  def handle_event("node_moved", params, socket),
+    do: NodeHandlers.moved(params, socket)
 
-    {:noreply, socket}
-  end
-
-  def handle_event("add_gateway", _params, socket) do
-    sg = socket.assigns.subgraph
-    node_count = map_size(sg.nodes)
-    y = 100 + node_count * 80
-
-    {:ok, _gateway, _child_sg} =
-      Store.add_gateway(sg.id, name: "Gateway #{node_count - 1}", position: %{x: 300, y: y})
-
-    {:noreply, socket}
-  end
-
-  def handle_event("add_node_at", %{"type" => type, "x" => x, "y" => y}, socket) do
-    sg = socket.assigns.subgraph
-    node_count = map_size(sg.nodes)
-
-    case type do
-      "leaf" ->
-        {:ok, _node} =
-          Store.add_node(sg.id,
-            type: :leaf,
-            name: "Node #{node_count - 1}",
-            position: %{x: x, y: y}
-          )
-
-        {:noreply, socket}
-
-      "gateway" ->
-        {:ok, _gw, _child} =
-          Store.add_gateway(sg.id, name: "Gateway #{node_count - 1}", position: %{x: x, y: y})
-
-        {:noreply, socket}
-
-      _ ->
-        {:noreply, socket}
-    end
-  end
-
-  def handle_event("select_node", %{"node-id" => node_id}, socket) do
-    cond do
-      socket.assigns.connecting_from ->
-        from_id = socket.assigns.connecting_from
-
-        if from_id != node_id do
-          Store.add_edge(socket.assigns.subgraph.id, from_id, node_id)
-        end
-
-        {:noreply, assign(socket, :connecting_from, nil)}
-
-      socket.assigns[:connecting_to] ->
-        to_id = socket.assigns.connecting_to
-
-        if to_id != node_id do
-          Store.add_edge(socket.assigns.subgraph.id, node_id, to_id)
-        end
-
-        {:noreply, assign(socket, :connecting_to, nil)}
-
-      true ->
-        {:noreply, assign(socket, :selected_node_id, node_id)}
-    end
-  end
-
-  def handle_event("deselect", _params, socket) do
-    {:noreply,
-     socket
-     |> assign(:selected_node_id, nil)
-     |> assign(:connecting_from, nil)
-     |> assign(:connecting_to, nil)}
-  end
-
-  def handle_event("delete_node", %{"node-id" => node_id}, socket) do
-    Store.remove_node(socket.assigns.subgraph.id, node_id)
-
-    {:noreply,
-     socket
-     |> assign(:selected_node_id, nil)
-     |> assign(:editing_content_node_id, nil)}
-  end
-
-  def handle_event("delete_edge", %{"edge-id" => edge_id}, socket) do
-    Store.remove_edge(socket.assigns.subgraph.id, edge_id)
-    {:noreply, socket}
-  end
-
-  def handle_event("start_connect", %{"node-id" => node_id}, socket) do
-    {:noreply, assign(socket, :connecting_from, node_id)}
-  end
-
-  def handle_event("cancel_connect", _params, socket) do
-    {:noreply, assign(socket, :connecting_from, nil)}
-  end
-
-  def handle_event("enter_gateway", %{"node-id" => node_id}, socket) do
-    sg = socket.assigns.subgraph
-    node = Map.get(sg.nodes, node_id)
-
-    if node && node.type == :gateway && node.subgraph_id do
-      child_sg = Graph.get_subgraph(socket.assigns.graph, node.subgraph_id)
-
-      if child_sg do
-        breadcrumb = socket.assigns.breadcrumb ++ [{child_sg.id, child_sg.name}]
-
-        {:noreply,
-         socket
-         |> assign(:subgraph, child_sg)
-         |> assign(:breadcrumb, breadcrumb)
-         |> assign(:selected_node_id, nil)
-         |> assign(:editing_content_node_id, nil)}
-      else
-        {:noreply, socket}
-      end
-    else
-      {:noreply, socket}
-    end
-  end
-
-  def handle_event("navigate_breadcrumb", %{"subgraph-id" => sg_id}, socket) do
-    subgraph = Graph.get_subgraph(socket.assigns.graph, sg_id)
-
-    if subgraph do
-      breadcrumb =
-        Enum.take_while(socket.assigns.breadcrumb, fn {id, _} -> id != sg_id end) ++
-          [{sg_id, subgraph.name}]
-
-      {:noreply,
-       socket
-       |> assign(:subgraph, subgraph)
-       |> assign(:breadcrumb, breadcrumb)
-       |> assign(:selected_node_id, nil)
-       |> assign(:editing_content_node_id, nil)}
-    else
-      {:noreply, socket}
-    end
-  end
-
-  def handle_event("node_moved", %{"node_id" => node_id, "x" => x, "y" => y}, socket) do
-    Store.update_node(socket.assigns.subgraph.id, node_id, position: %{x: x, y: y})
-    {:noreply, socket}
-  end
-
-  def handle_event("rename_node", %{"node-id" => node_id, "name" => name}, socket) do
-    Store.update_node(socket.assigns.subgraph.id, node_id, name: name)
-    {:noreply, socket}
-  end
+  def handle_event("rename_node", params, socket),
+    do: NodeHandlers.rename(params, socket)
 
   # --- Content editing ---
 
-  def handle_event("edit_node_content", %{"node-id" => node_id}, socket) do
-    {:noreply,
-     socket
-     |> assign(:editing_content_node_id, node_id)
-     |> assign(:selected_node_id, node_id)}
-  end
+  def handle_event("edit_node_content", params, socket),
+    do: NodeHandlers.edit_content(params, socket)
 
-  def handle_event("save_content", %{"node-id" => node_id, "content" => content}, socket) do
-    Store.update_node(socket.assigns.subgraph.id, node_id, content: content)
-    {:noreply, assign(socket, :editing_content_node_id, nil)}
-  end
+  def handle_event("save_content", params, socket),
+    do: NodeHandlers.save_content(params, socket)
 
-  def handle_event("close_editor", _params, socket) do
-    {:noreply, assign(socket, :editing_content_node_id, nil)}
-  end
+  def handle_event("close_editor", params, socket),
+    do: NodeHandlers.close_editor(params, socket)
 
   # --- Machine ---
 
-  def handle_event("update_machine", params, socket) do
-    node_id = params["node-id"]
-
-    machine_type = if params["type"] == "home_manager", do: :home_manager, else: :nixos
-
-    machine = %{
-      hostname: params["hostname"],
-      system: params["system"],
-      state_version: params["state_version"],
-      type: machine_type,
-      username: params["username"] || "user"
-    }
-
-    Store.update_node(socket.assigns.subgraph.id, node_id,
-      machine: machine,
-      name: params["hostname"]
-    )
-
-    {:noreply, socket}
-  end
+  def handle_event("update_machine", params, socket),
+    do: MachineHandlers.update(params, socket)
 
   # --- Undo / Redo ---
 
-  def handle_event("undo", _params, socket) do
-    Store.undo()
-    {:noreply, socket}
-  end
+  def handle_event("undo", params, socket),
+    do: GraphStateHandlers.undo(params, socket)
 
-  def handle_event("redo", _params, socket) do
-    Store.redo()
-    {:noreply, socket}
-  end
+  def handle_event("redo", params, socket),
+    do: GraphStateHandlers.redo(params, socket)
 
   # --- Search ---
 
-  def handle_event("search_nodes", %{"q" => query}, socket) do
-    results =
-      if String.trim(query) == "" do
-        []
-      else
-        search_graph(socket.assigns.graph, query)
-      end
+  def handle_event("search_nodes", params, socket),
+    do: NavigationHandlers.search(params, socket)
 
-    {:noreply,
-     socket
-     |> assign(:search_query, query)
-     |> assign(:search_results, results)}
-  end
-
-  def handle_event("goto_search_result", %{"subgraph-id" => sg_id, "node-id" => node_id}, socket) do
-    subgraph = Graph.get_subgraph(socket.assigns.graph, sg_id)
-
-    if subgraph do
-      breadcrumb = build_breadcrumb_to(socket.assigns.graph, sg_id)
-
-      {:noreply,
-       socket
-       |> assign(:subgraph, subgraph)
-       |> assign(:breadcrumb, breadcrumb)
-       |> assign(:selected_node_id, node_id)
-       |> assign(:search_query, "")
-       |> assign(:search_results, [])}
-    else
-      {:noreply, socket}
-    end
-  end
-
-  defp search_graph(graph, query) do
-    q = String.downcase(query)
-
-    graph.subgraphs
-    |> Enum.flat_map(fn {sg_id, sg} ->
-      sg.nodes
-      |> Enum.filter(fn {_id, node} -> matches_search?(node, q) end)
-      |> Enum.map(fn {_id, node} ->
-        %{node: node, subgraph_id: sg_id, subgraph_name: sg.name}
-      end)
-    end)
-    |> Enum.take(50)
-  end
-
-  defp matches_search?(node, q) do
-    String.contains?(String.downcase(node.name), q) ||
-      (is_binary(node.content) && String.contains?(String.downcase(node.content), q))
-  end
-
-  defp build_breadcrumb_to(graph, target_sg_id) do
-    # Walk from root looking for path to target subgraph
-    root_id = graph.root_subgraph_id
-    root = graph.subgraphs[root_id]
-    initial = [{root_id, root.name}]
-
-    case find_path(graph, root, target_sg_id, initial) do
-      nil -> initial
-      path -> path
-    end
-  end
-
-  defp find_path(_graph, sg, target_id, acc) when sg.id == target_id, do: acc
-
-  defp find_path(graph, sg, target_id, acc) do
-    sg.nodes
-    |> Map.values()
-    |> Enum.find_value(fn node ->
-      if node.type == :gateway && is_binary(node.subgraph_id) do
-        case Graph.get_subgraph(graph, node.subgraph_id) do
-          nil ->
-            nil
-
-          child_sg ->
-            new_acc = acc ++ [{child_sg.id, child_sg.name}]
-
-            cond do
-              child_sg.id == target_id -> new_acc
-              true -> find_path(graph, child_sg, target_id, new_acc)
-            end
-        end
-      end
-    end)
-  end
+  def handle_event("goto_search_result", params, socket),
+    do: NavigationHandlers.goto_search_result(params, socket)
 
   # --- Backend toggle ---
 
-  def handle_event("toggle_backend", _params, socket) do
-    new_backend = if socket.assigns.graph.backend == :flake, do: :traditional, else: :flake
-    Store.set_backend(new_backend)
-    {:noreply, socket}
-  end
+  def handle_event("toggle_backend", params, socket),
+    do: GraphStateHandlers.toggle_backend(params, socket)
 
-  # --- Generate ---
+  # --- Deploy pipeline ---
 
-  def handle_event("generate", _params, socket) do
-    graph = socket.assigns.graph
-    output = Tomato.Walker.walk(graph)
+  def handle_event("generate", params, socket),
+    do: DeployHandlers.generate(params, socket)
 
-    # Write .nix file to disk
-    generated_dir = Path.expand("priv/generated", File.cwd!())
-    File.mkdir_p!(generated_dir)
+  def handle_event("close_generated", params, socket),
+    do: DeployHandlers.close_generated(params, socket)
 
-    filename =
-      case graph.backend do
-        :flake -> "flake.nix"
-        _ -> Tomato.Store.slugify(graph.name) <> ".nix"
-      end
+  def handle_event("reconfigure", params, socket),
+    do: DeployHandlers.reconfigure(params, socket)
 
-    nix_path = Path.join(generated_dir, filename)
-    File.write!(nix_path, output)
+  def handle_event("show_diff", params, socket),
+    do: DeployHandlers.show_diff(params, socket)
 
-    {:noreply,
-     socket
-     |> assign(:generated_output, output)
-     |> assign(:generated_path, nix_path)
-     |> assign(:show_generated, true)}
-  end
+  def handle_event("rollback", params, socket),
+    do: DeployHandlers.rollback(params, socket)
 
-  def handle_event("close_generated", _params, socket) do
-    {:noreply,
-     socket
-     |> assign(:show_generated, false)
-     |> assign(:deploy_status, nil)
-     |> assign(:deploy_output, "")}
-  end
-
-  def handle_event("reconfigure", params, socket) do
-    nix_path = socket.assigns.generated_path
-    mode = parse_deploy_mode(params["mode"])
-
-    if nix_path && File.exists?(nix_path) do
-      pid = self()
-
-      Task.Supervisor.start_child(Tomato.TaskSupervisor, fn ->
-        result = Tomato.Deploy.deploy(nix_path, %{mode: mode})
-        send(pid, {:deploy_result, result})
-      end)
-
-      {:noreply,
-       socket
-       |> assign(:deploy_status, "running")
-       |> assign(:deploy_output, "Running nixos-rebuild #{mode}...")}
-    else
-      {:noreply,
-       socket
-       |> assign(:deploy_status, "error")
-       |> assign(:deploy_output, "No .nix file generated yet. Click Generate first.")}
-    end
-  end
-
-  def handle_event("show_diff", _params, socket) do
-    nix_path = socket.assigns.generated_path
-
-    if nix_path && File.exists?(nix_path) do
-      pid = self()
-
-      Task.Supervisor.start_child(Tomato.TaskSupervisor, fn ->
-        result = Tomato.Deploy.diff(nix_path)
-        send(pid, {:diff_result, result})
-      end)
-
-      {:noreply,
-       socket
-       |> assign(:deploy_status, "running")
-       |> assign(:deploy_output, "Fetching current config from machine...")}
-    else
-      {:noreply, socket}
-    end
-  end
-
-  def handle_event("rollback", _params, socket) do
-    pid = self()
-
-    Task.Supervisor.start_child(Tomato.TaskSupervisor, fn ->
-      result = Tomato.Deploy.rollback()
-      send(pid, {:deploy_result, result})
-    end)
-
-    {:noreply,
-     socket
-     |> assign(:deploy_status, "running")
-     |> assign(:deploy_output, "Rolling back to previous generation...")}
-  end
-
-  def handle_event("test_connection", _params, socket) do
-    pid = self()
-
-    Task.Supervisor.start_child(Tomato.TaskSupervisor, fn ->
-      result = Tomato.Deploy.test_connection()
-      send(pid, {:deploy_result, result})
-    end)
-
-    {:noreply,
-     socket
-     |> assign(:deploy_status, "running")
-     |> assign(:deploy_output, "Testing SSH connection...")}
-  end
-
-  defp parse_deploy_mode("test"), do: :test
-  defp parse_deploy_mode("dry_activate"), do: :dry_activate
-  defp parse_deploy_mode("build"), do: :build
-  defp parse_deploy_mode(_), do: :switch
+  def handle_event("test_connection", params, socket),
+    do: DeployHandlers.test_connection(params, socket)
 
   # --- Graph management ---
 
-  def handle_event("open_graph_manager", _params, socket) do
-    graph_list = Store.list_graphs()
+  def handle_event("open_graph_manager", params, socket),
+    do: GraphStateHandlers.open_manager(params, socket)
 
-    {:noreply,
-     socket
-     |> assign(:show_graph_manager, true)
-     |> assign(:graph_list, graph_list)}
-  end
+  def handle_event("close_graph_manager", params, socket),
+    do: GraphStateHandlers.close_manager(params, socket)
 
-  def handle_event("close_graph_manager", _params, socket) do
-    {:noreply, assign(socket, :show_graph_manager, false)}
-  end
+  def handle_event("load_graph_file", params, socket),
+    do: GraphStateHandlers.load(params, socket)
 
-  def handle_event("load_graph_file", %{"filename" => filename}, socket) do
-    case Store.load_graph(filename) do
-      {:ok, graph} ->
-        root = Graph.root_subgraph(graph)
+  def handle_event("new_graph_submit", params, socket),
+    do: GraphStateHandlers.new(params, socket)
 
-        {:noreply,
-         socket
-         |> assign(:graph, graph)
-         |> assign(:subgraph, root)
-         |> assign(:breadcrumb, [{root.id, root.name}])
-         |> assign(:selected_node_id, nil)
-         |> assign(:show_graph_manager, false)
-         |> assign(:current_file, filename)}
+  def handle_event("save_as_submit", params, socket),
+    do: GraphStateHandlers.save_as(params, socket)
 
-      _ ->
-        {:noreply, put_flash(socket, :error, "Failed to load graph")}
-    end
-  end
-
-  def handle_event("new_graph_submit", %{"name" => name}, socket) when name != "" do
-    {:ok, graph, filename} = Store.new_graph(name)
-    root = Graph.root_subgraph(graph)
-
-    {:noreply,
-     socket
-     |> assign(:graph, graph)
-     |> assign(:subgraph, root)
-     |> assign(:breadcrumb, [{root.id, root.name}])
-     |> assign(:selected_node_id, nil)
-     |> assign(:show_graph_manager, false)
-     |> assign(:current_file, filename)}
-  end
-
-  def handle_event("new_graph_submit", _params, socket) do
-    {:noreply, socket}
-  end
-
-  def handle_event("save_as_submit", %{"name" => name}, socket) when name != "" do
-    {:ok, filename} = Store.save_as(name)
-
-    {:noreply,
-     socket
-     |> assign(:current_file, filename)
-     |> assign(:show_graph_manager, false)
-     |> put_flash(:info, "Saved as #{filename}")}
-  end
-
-  def handle_event("save_as_submit", _params, socket) do
-    {:noreply, socket}
-  end
-
-  def handle_event("delete_graph_file", %{"filename" => filename}, socket) do
-    Store.delete_graph(filename)
-    graph_list = Store.list_graphs()
-    {:noreply, assign(socket, :graph_list, graph_list)}
-  end
+  def handle_event("delete_graph_file", params, socket),
+    do: GraphStateHandlers.delete(params, socket)
 
   # --- OODN ---
 
-  def handle_event("select_oodn", _params, socket) do
-    {:noreply, assign(socket, :editing_oodn, true)}
-  end
+  def handle_event("select_oodn", params, socket),
+    do: OodnHandlers.select(params, socket)
 
-  def handle_event("close_oodn_editor", _params, socket) do
-    {:noreply, assign(socket, :editing_oodn, false)}
-  end
+  def handle_event("close_oodn_editor", params, socket),
+    do: OodnHandlers.close_editor(params, socket)
 
-  def handle_event("add_oodn", %{"key" => key, "value" => value}, socket) do
-    Store.put_oodn(key, value)
-    {:noreply, socket}
-  end
+  def handle_event("add_oodn", params, socket),
+    do: OodnHandlers.add(params, socket)
 
-  def handle_event("update_oodn", %{"oodn-id" => oodn_id, "value" => value}, socket) do
-    Store.update_oodn(oodn_id, value)
-    {:noreply, socket}
-  end
+  def handle_event("update_oodn", params, socket),
+    do: OodnHandlers.update(params, socket)
 
-  def handle_event("remove_oodn", %{"oodn-id" => oodn_id}, socket) do
-    Store.remove_oodn(oodn_id)
-    {:noreply, socket}
-  end
+  def handle_event("remove_oodn", params, socket),
+    do: OodnHandlers.remove(params, socket)
 
-  def handle_event("oodn_moved", %{"x" => x, "y" => y}, socket) do
-    Store.move_oodn(%{x: x, y: y})
-    {:noreply, socket}
-  end
+  def handle_event("oodn_moved", params, socket),
+    do: OodnHandlers.move(params, socket)
 
   # --- Context menu actions ---
 
-  def handle_event("start_connect_to", %{"node-id" => node_id}, socket) do
-    {:noreply, assign(socket, :connecting_to, node_id)}
-  end
+  def handle_event("start_connect_to", params, socket),
+    do: EdgeHandlers.start_connect_to(params, socket)
 
-  def handle_event("duplicate_node", %{"node-id" => node_id}, socket) do
-    sg = socket.assigns.subgraph
-    node = Map.get(sg.nodes, node_id)
+  def handle_event("duplicate_node", params, socket),
+    do: NodeHandlers.duplicate(params, socket)
 
-    if node do
-      {:ok, _new_node} =
-        Store.add_node(sg.id,
-          type: node.type,
-          name: node.name <> " (copy)",
-          content: node.content,
-          position: %{x: node.position.x + 40, y: node.position.y + 40}
-        )
-    end
+  def handle_event("disconnect_node", params, socket),
+    do: EdgeHandlers.disconnect(params, socket)
 
-    {:noreply, socket}
-  end
+  def handle_event("reverse_edge", params, socket),
+    do: EdgeHandlers.reverse(params, socket)
 
-  def handle_event("disconnect_node", %{"node-id" => node_id}, socket) do
-    sg = socket.assigns.subgraph
+  def handle_event("start_rename", params, socket),
+    do: NodeHandlers.start_rename(params, socket)
 
-    sg.edges
-    |> Enum.filter(fn {_id, edge} -> edge.from == node_id or edge.to == node_id end)
-    |> Enum.each(fn {edge_id, _edge} ->
-      Store.remove_edge(sg.id, edge_id)
-    end)
-
-    {:noreply, socket}
-  end
-
-  def handle_event("reverse_edge", %{"edge-id" => edge_id}, socket) do
-    sg = socket.assigns.subgraph
-
-    case Map.get(sg.edges, edge_id) do
-      nil ->
-        {:noreply, socket}
-
-      edge ->
-        Store.remove_edge(sg.id, edge_id)
-        Store.add_edge(sg.id, edge.to, edge.from)
-        {:noreply, socket}
-    end
-  end
-
-  def handle_event("start_rename", %{"node-id" => node_id}, socket) do
-    {:noreply, assign(socket, :selected_node_id, node_id)}
-  end
-
+  # Canvas event plumbing — phx-click="stop_propagation" on the sidebar wrapper
+  # prevents clicks inside the sidebar from bubbling to the outer `deselect`
+  # handler. Not a domain handler, stays inline.
   def handle_event("stop_propagation", _params, socket) do
     {:noreply, socket}
   end
@@ -765,280 +263,28 @@ defmodule TomatoWeb.GraphLive do
         class="w-72 bg-base-100 border-r border-base-300 flex flex-col"
         phx-click="stop_propagation"
       >
-        <%!-- Header --%>
-        <div class="p-3 border-b border-base-300">
-          <div class="flex items-center gap-2">
-            <span class="text-lg font-bold text-primary">Tomato</span>
-            <span class="text-xs text-base-content/40">v0.2</span>
-          </div>
-          <div class="flex items-center gap-1 mt-2">
-            <button
-              class="btn btn-xs btn-ghost flex-1"
-              phx-click="open_graph_manager"
-              title="Open / New / Save As"
-            >
-              {@current_file || "unsaved"}
-            </button>
-            <button
-              class={[
-                "btn btn-xs",
-                @graph.backend == :flake && "btn-info",
-                @graph.backend != :flake && "btn-ghost"
-              ]}
-              phx-click="toggle_backend"
-              title="Switch between Traditional and Flake output"
-            >
-              {if @graph.backend == :flake, do: "Flake", else: "Traditional"}
-            </button>
-            <button class="btn btn-xs btn-accent" phx-click="generate">
-              Generate
-            </button>
-          </div>
-          <%!-- Undo/Redo --%>
-          <div class="flex items-center gap-1 mt-2">
-            <button
-              class={["btn btn-xs btn-ghost flex-1", elem(@history_status, 0) == 0 && "btn-disabled"]}
-              phx-click="undo"
-              title="Undo (Cmd+Z)"
-              disabled={elem(@history_status, 0) == 0}
-            >
-              ↶ Undo ({elem(@history_status, 0)})
-            </button>
-            <button
-              class={["btn btn-xs btn-ghost flex-1", elem(@history_status, 1) == 0 && "btn-disabled"]}
-              phx-click="redo"
-              title="Redo (Cmd+Shift+Z)"
-              disabled={elem(@history_status, 1) == 0}
-            >
-              Redo ({elem(@history_status, 1)}) ↷
-            </button>
-          </div>
-        </div>
+        <.sidebar_header
+          current_file={@current_file}
+          backend={@graph.backend}
+          history_status={@history_status}
+        />
 
-        <%!-- Breadcrumb --%>
-        <div class="p-3 border-b border-base-300">
-          <div class="text-xs text-base-content/60 mb-1">Floor {@subgraph.floor}</div>
-          <div class="flex flex-wrap gap-1">
-            <span
-              :for={{sg_id, name} <- @breadcrumb}
-              class="text-sm cursor-pointer hover:text-primary"
-              phx-click="navigate_breadcrumb"
-              phx-value-subgraph-id={sg_id}
-            >
-              <span class="text-base-content/40">/</span>{name}
-            </span>
-          </div>
-        </div>
+        <.breadcrumb breadcrumb={@breadcrumb} floor={@subgraph.floor} />
 
-        <%!-- Toolbar --%>
-        <div class="p-3 border-b border-base-300 space-y-2">
-          <button class="btn btn-sm btn-primary w-full" phx-click="show_template_picker">
-            + Add Node
-          </button>
-          <button class="btn btn-sm btn-secondary w-full" phx-click="add_gateway">
-            + Gateway
-          </button>
-          <button
-            :if={@subgraph.floor == 0}
-            class="btn btn-sm btn-warning w-full"
-            phx-click="add_machine"
-          >
-            + Machine
-          </button>
-        </div>
+        <.sidebar_toolbar floor={@subgraph.floor} />
 
-        <%!-- Search --%>
-        <div class="p-3 border-b border-base-300">
-          <form phx-change="search_nodes" phx-submit="search_nodes">
-            <input
-              type="text"
-              name="q"
-              value={@search_query}
-              placeholder="Search nodes..."
-              class="input input-xs input-bordered w-full"
-              phx-debounce="200"
-            />
-          </form>
-        </div>
+        <.search_panel query={@search_query} results={@search_results} />
 
-        <%!-- Search results (when searching) --%>
-        <div :if={@search_query != "" && @search_results != []} class="flex-1 overflow-y-auto p-3">
-          <h3 class="text-xs font-semibold text-base-content/60 mb-2 uppercase">
-            Results ({length(@search_results)})
-          </h3>
-          <div class="space-y-1">
-            <div
-              :for={result <- @search_results}
-              class="flex items-center gap-2 px-2 py-1.5 rounded text-sm cursor-pointer hover:bg-base-200"
-              phx-click="goto_search_result"
-              phx-value-subgraph-id={result.subgraph_id}
-              phx-value-node-id={result.node.id}
-            >
-              <span class={["w-2 h-2 rounded-full shrink-0", node_color(result.node.type)]} />
-              <div class="flex-1 min-w-0">
-                <div class="truncate">{result.node.name}</div>
-                <div class="text-xs text-base-content/40 truncate">in {result.subgraph_name}</div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <.node_list
+          :if={@search_query == ""}
+          nodes={@subgraph.nodes}
+          selected_node_id={@selected_node_id}
+        />
 
-        <%!-- Empty results --%>
-        <div
-          :if={@search_query != "" && @search_results == []}
-          class="flex-1 overflow-y-auto p-3"
-        >
-          <div class="text-xs text-base-content/40 text-center py-4">
-            No nodes match "{@search_query}"
-          </div>
-        </div>
-
-        <%!-- Node List (when not searching) --%>
-        <div :if={@search_query == ""} class="flex-1 overflow-y-auto p-3">
-          <h3 class="text-xs font-semibold text-base-content/60 mb-2 uppercase">Nodes</h3>
-          <div class="space-y-1">
-            <div
-              :for={{_id, node} <- @subgraph.nodes}
-              class={[
-                "flex items-center gap-2 px-2 py-1.5 rounded text-sm cursor-pointer",
-                node.id == @selected_node_id && "bg-primary/10 text-primary",
-                node.id != @selected_node_id && "hover:bg-base-200"
-              ]}
-              phx-click="select_node"
-              phx-value-node-id={node.id}
-            >
-              <span class={["w-2 h-2 rounded-full shrink-0", node_color(node.type)]} />
-              <span class="truncate">{node.name}</span>
-              <span
-                :if={node.type == :leaf && has_content?(node)}
-                class="text-xs text-success ml-auto"
-                title="Has content"
-              >
-                *
-              </span>
-              <span class="text-xs text-base-content/40 ml-auto">{node.type}</span>
-            </div>
-          </div>
-        </div>
-
-        <%!-- Selected Node Panel --%>
-        <div
+        <.properties_panel
           :if={@selected_node_id && Map.get(@subgraph.nodes, @selected_node_id)}
-          class="border-t border-base-300 p-3"
-        >
-          <% node = Map.get(@subgraph.nodes, @selected_node_id) %>
-          <h3 class="text-xs font-semibold text-base-content/60 mb-2 uppercase">Properties</h3>
-          <div class="space-y-2">
-            <div>
-              <label class="text-xs text-base-content/60">Name</label>
-              <form phx-submit="rename_node" phx-value-node-id={node.id}>
-                <input
-                  type="text"
-                  name="name"
-                  value={node.name}
-                  class="input input-sm input-bordered w-full"
-                />
-              </form>
-            </div>
-            <div class="text-xs text-base-content/50">
-              Type: {node.type}{if Tomato.Node.machine?(node), do: " (machine)", else: ""}
-            </div>
-            <%!-- Machine metadata editor --%>
-            <div :if={Tomato.Node.machine?(node)} class="space-y-1">
-              <form phx-submit="update_machine" phx-value-node-id={node.id}>
-                <div class="flex gap-1 items-center">
-                  <label class="text-xs text-base-content/60 w-16">Type</label>
-                  <select name="type" class="select select-xs select-bordered flex-1 font-mono">
-                    <option value="nixos" selected={Map.get(node.machine, :type, :nixos) == :nixos}>
-                      NixOS
-                    </option>
-                    <option
-                      value="home_manager"
-                      selected={Map.get(node.machine, :type) == :home_manager}
-                    >
-                      Home Manager
-                    </option>
-                  </select>
-                </div>
-                <div class="flex gap-1 items-center mt-1">
-                  <label class="text-xs text-base-content/60 w-16">Host</label>
-                  <input
-                    type="text"
-                    name="hostname"
-                    value={node.machine.hostname}
-                    class="input input-xs input-bordered flex-1 font-mono"
-                  />
-                </div>
-                <div class="flex gap-1 items-center mt-1">
-                  <label class="text-xs text-base-content/60 w-16">User</label>
-                  <input
-                    type="text"
-                    name="username"
-                    value={Map.get(node.machine, :username, "user")}
-                    class="input input-xs input-bordered flex-1 font-mono"
-                  />
-                </div>
-                <div class="flex gap-1 items-center mt-1">
-                  <label class="text-xs text-base-content/60 w-16">System</label>
-                  <select name="system" class="select select-xs select-bordered flex-1 font-mono">
-                    <option value="aarch64-linux" selected={node.machine.system == "aarch64-linux"}>
-                      aarch64-linux
-                    </option>
-                    <option value="x86_64-linux" selected={node.machine.system == "x86_64-linux"}>
-                      x86_64-linux
-                    </option>
-                    <option value="aarch64-darwin" selected={node.machine.system == "aarch64-darwin"}>
-                      aarch64-darwin
-                    </option>
-                  </select>
-                </div>
-                <div class="flex gap-1 items-center mt-1">
-                  <label class="text-xs text-base-content/60 w-16">Version</label>
-                  <input
-                    type="text"
-                    name="state_version"
-                    value={node.machine.state_version}
-                    class="input input-xs input-bordered flex-1 font-mono"
-                  />
-                </div>
-                <button type="submit" class="btn btn-xs btn-warning mt-1 w-full">Update</button>
-              </form>
-            </div>
-            <div class="flex flex-wrap gap-2">
-              <button
-                :if={node.type == :leaf}
-                class="btn btn-xs btn-info"
-                phx-click="edit_node_content"
-                phx-value-node-id={node.id}
-              >
-                Edit Content
-              </button>
-              <button
-                :if={node.type not in [:input, :output]}
-                class="btn btn-xs btn-error"
-                phx-click="delete_node"
-                phx-value-node-id={node.id}
-              >
-                Delete
-              </button>
-              <button
-                class="btn btn-xs btn-outline"
-                phx-click="start_connect"
-                phx-value-node-id={node.id}
-              >
-                Connect
-              </button>
-              <button
-                :if={node.type == :gateway}
-                class="btn btn-xs btn-accent"
-                phx-click="enter_gateway"
-                phx-value-node-id={node.id}
-              >
-                Enter
-              </button>
-            </div>
-          </div>
-        </div>
+          node={Map.get(@subgraph.nodes, @selected_node_id)}
+        />
       </div>
 
       <%!-- Canvas --%>
@@ -1125,6 +371,7 @@ defmodule TomatoWeb.GraphLive do
         :if={@show_generated}
         output={@generated_output}
         path={@generated_path}
+        validation={@validation_result}
         deploy_status={@deploy_status}
         deploy_output={@deploy_output}
       />
@@ -1139,890 +386,4 @@ defmodule TomatoWeb.GraphLive do
     """
   end
 
-  # --- Minimap ---
-
-  attr :subgraph, :map, required: true
-
-  defp minimap(assigns) do
-    nodes = Map.values(assigns.subgraph.nodes)
-
-    {min_x, max_x, min_y, max_y} =
-      if nodes == [] do
-        {0, 800, 0, 600}
-      else
-        xs = Enum.map(nodes, & &1.position.x)
-        ys = Enum.map(nodes, & &1.position.y)
-        {Enum.min(xs) - 100, Enum.max(xs) + 100, Enum.min(ys) - 100, Enum.max(ys) + 100}
-      end
-
-    width = max(max_x - min_x, 100)
-    height = max(max_y - min_y, 100)
-
-    assigns =
-      assigns
-      |> assign(:nodes, nodes)
-      |> assign(:vb_x, min_x)
-      |> assign(:vb_y, min_y)
-      |> assign(:vb_w, width)
-      |> assign(:vb_h, height)
-
-    ~H"""
-    <div class="absolute bottom-4 right-4 z-10 bg-base-100/90 border border-base-300 rounded-lg shadow-lg p-1">
-      <div class="text-[9px] text-base-content/40 px-1 mb-0.5 font-semibold uppercase">
-        Minimap
-      </div>
-      <svg
-        width="180"
-        height="120"
-        viewBox={"#{@vb_x} #{@vb_y} #{@vb_w} #{@vb_h}"}
-        class="bg-base-200 rounded"
-      >
-        <%!-- Edges --%>
-        <line
-          :for={{_id, edge} <- @subgraph.edges}
-          x1={(Map.get(@subgraph.nodes, edge.from) || %{position: %{x: 0}}).position.x}
-          y1={(Map.get(@subgraph.nodes, edge.from) || %{position: %{y: 0}}).position.y}
-          x2={(Map.get(@subgraph.nodes, edge.to) || %{position: %{x: 0}}).position.x}
-          y2={(Map.get(@subgraph.nodes, edge.to) || %{position: %{y: 0}}).position.y}
-          stroke="currentColor"
-          stroke-width="2"
-          opacity="0.3"
-        />
-        <%!-- Nodes --%>
-        <rect
-          :for={node <- @nodes}
-          x={node.position.x - 30}
-          y={node.position.y - 15}
-          width="60"
-          height="30"
-          rx="4"
-          fill={minimap_color(node)}
-          opacity="0.7"
-        />
-      </svg>
-    </div>
-    """
-  end
-
-  defp minimap_color(%{type: :input}), do: "#10b981"
-  defp minimap_color(%{type: :output}), do: "#ef4444"
-
-  defp minimap_color(%{type: :gateway} = node) do
-    if Tomato.Node.machine?(node), do: "#d97706", else: "#a855f7"
-  end
-
-  defp minimap_color(_), do: "#06b6d4"
-
-  # --- SVG Components ---
-
-  attr :node, :map, required: true
-  attr :selected, :boolean, default: false
-  attr :connecting, :boolean, default: false
-
-  defp graph_node(assigns) do
-    is_machine = Tomato.Node.machine?(assigns.node)
-    has_preview = assigns.node.type == :leaf && has_content?(assigns.node)
-    preview_lines = if has_preview, do: content_preview(assigns.node.content, 3), else: []
-
-    assigns =
-      assigns
-      |> assign(:is_machine, is_machine)
-      |> assign(:has_preview, has_preview)
-      |> assign(:preview_lines, preview_lines)
-
-    ~H"""
-    <g
-      class="graph-node cursor-grab active:cursor-grabbing"
-      data-node-id={@node.id}
-      data-node-type={if @is_machine, do: "machine", else: @node.type}
-      data-node-name={@node.name}
-      transform={"translate(#{@node.position.x}, #{@node.position.y})"}
-      phx-click="select_node"
-      phx-value-node-id={@node.id}
-    >
-      <%!-- Machine node --%>
-      <rect
-        :if={@is_machine}
-        x="-80"
-        y="-25"
-        width="160"
-        height="50"
-        rx="8"
-        fill="#fef3c7"
-        stroke="#d97706"
-        stroke-width={if @selected, do: "3", else: "2"}
-      />
-      <%!-- Leaf with preview (taller) --%>
-      <rect
-        :if={!@is_machine && @has_preview}
-        x="-80"
-        y="-30"
-        width="160"
-        height="80"
-        rx="6"
-        class={[
-          "stroke-2 transition-colors",
-          node_rect_class(@node.type, @selected)
-        ]}
-      />
-      <%!-- Regular node (no preview) --%>
-      <rect
-        :if={!@is_machine && !@has_preview}
-        x="-60"
-        y="-20"
-        width="120"
-        height="40"
-        rx="6"
-        class={[
-          "stroke-2 transition-colors",
-          node_rect_class(@node.type, @selected)
-        ]}
-      />
-      <%!-- Machine icon --%>
-      <text
-        :if={@is_machine}
-        x="-62"
-        y="1"
-        font-size="16"
-        class="select-none pointer-events-none"
-      >
-        &#9881;
-      </text>
-      <%!-- Machine system label --%>
-      <text
-        :if={@is_machine}
-        x="0"
-        y="12"
-        text-anchor="middle"
-        font-size="9"
-        fill="#92400e"
-        opacity="0.6"
-        class="select-none pointer-events-none"
-      >
-        {@node.machine.system}
-      </text>
-      <%!-- Gateway indicator (non-machine) --%>
-      <circle
-        :if={@node.type == :gateway && !@is_machine}
-        cx="-42"
-        cy="0"
-        r="6"
-        class="fill-secondary/30 stroke-secondary"
-        stroke-width="1.5"
-      />
-      <%!-- Content indicator for leaf nodes --%>
-      <circle
-        :if={@node.type == :leaf && @has_preview}
-        cx="62"
-        cy="-20"
-        r="4"
-        class="fill-success stroke-success/50"
-        stroke-width="1"
-      />
-      <%!-- Node name --%>
-      <text
-        :if={!@has_preview}
-        text-anchor="middle"
-        dominant-baseline={if @is_machine, do: "auto", else: "central"}
-        y={if @is_machine, do: "-3", else: "0"}
-        class={[
-          "text-xs select-none pointer-events-none",
-          if(@is_machine, do: "fill-amber-800 font-bold", else: node_text_class(@selected))
-        ]}
-      >
-        {@node.name}
-      </text>
-      <%!-- Leaf with preview: name at top, content below --%>
-      <text
-        :if={@has_preview}
-        x="-72"
-        y="-15"
-        font-size="11"
-        font-weight="bold"
-        class={["select-none pointer-events-none", node_text_class(@selected)]}
-      >
-        {@node.name}
-      </text>
-      <text
-        :for={{line, idx} <- Enum.with_index(@preview_lines)}
-        :if={@has_preview}
-        x="-72"
-        y={3 + idx * 13}
-        font-size="9"
-        font-family="monospace"
-        opacity="0.65"
-        class={["select-none pointer-events-none", node_text_class(@selected)]}
-      >
-        {line}
-      </text>
-    </g>
-    """
-  end
-
-  defp content_preview(nil, _), do: []
-
-  defp content_preview(content, max_lines) do
-    content
-    |> String.split("\n")
-    |> Enum.reject(&(String.trim(&1) == ""))
-    |> Enum.take(max_lines)
-    |> Enum.map(&truncate_line/1)
-  end
-
-  defp truncate_line(line) do
-    trimmed = String.trim_leading(line)
-
-    if String.length(trimmed) > 22 do
-      String.slice(trimmed, 0, 20) <> ".."
-    else
-      trimmed
-    end
-  end
-
-  defp node_half_width(node) do
-    cond do
-      Tomato.Node.machine?(node) -> 80
-      node.type == :leaf && has_content?(node) -> 80
-      true -> 60
-    end
-  end
-
-  attr :edge, :map, required: true
-  attr :nodes, :map, required: true
-
-  defp edge_line(assigns) do
-    from_node = Map.get(assigns.nodes, assigns.edge.from)
-    to_node = Map.get(assigns.nodes, assigns.edge.to)
-
-    path_d =
-      if from_node && to_node do
-        x1 = from_node.position.x + node_half_width(from_node)
-        y1 = from_node.position.y
-        x2 = to_node.position.x - node_half_width(to_node)
-        y2 = to_node.position.y
-        dx = abs(x2 - x1)
-        offset = max(dx * 0.5, 80)
-        "M #{x1} #{y1} C #{x1 + offset} #{y1}, #{x2 - offset} #{y2}, #{x2} #{y2}"
-      end
-
-    assigns =
-      assigns
-      |> assign(:from_node, from_node)
-      |> assign(:to_node, to_node)
-      |> assign(:path_d, path_d)
-
-    ~H"""
-    <path
-      :if={@from_node && @to_node}
-      d={@path_d}
-      data-edge-id={@edge.id}
-      data-from={@edge.from}
-      data-to={@edge.to}
-      fill="none"
-      class="stroke-base-content/30 stroke-2 hover:stroke-primary cursor-pointer"
-      marker-end="url(#arrowhead)"
-      phx-click="delete_edge"
-      phx-value-edge-id={@edge.id}
-    />
-    """
-  end
-
-  # --- Template Picker ---
-
-  defp template_picker(assigns) do
-    categories = Tomato.TemplateLibrary.by_category()
-    assigns = assign(assigns, :categories, categories)
-
-    ~H"""
-    <div class="fixed inset-0 z-40 overflow-y-auto">
-      <div class="fixed inset-0 bg-black/50" phx-click="close_template_picker" />
-      <div class="flex min-h-full items-center justify-center p-4">
-        <div class="relative bg-base-100 rounded-lg shadow-2xl w-[600px] max-h-[80vh] flex flex-col">
-          <div class="flex items-center justify-between p-4 border-b border-base-300 shrink-0">
-            <div>
-              <h2 class="font-semibold">Add Node from Template</h2>
-              <p class="text-xs text-base-content/50">Pick a predefined NixOS configuration</p>
-            </div>
-            <button class="btn btn-sm btn-ghost" phx-click="close_template_picker">X</button>
-          </div>
-
-          <div class="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
-            <div :for={{category, templates} <- @categories}>
-              <h3 class="text-xs font-semibold text-base-content/50 uppercase mb-2">{category}</h3>
-              <div class="grid grid-cols-2 gap-2">
-                <button
-                  :for={t <- templates}
-                  class={[
-                    "flex flex-col items-start p-3 rounded-lg border transition-colors cursor-pointer text-left",
-                    Map.get(t, :type) == :gateway &&
-                      "border-secondary/40 hover:border-secondary hover:bg-secondary/5",
-                    Map.get(t, :type) != :gateway &&
-                      "border-base-300 hover:border-primary hover:bg-primary/5"
-                  ]}
-                  phx-click="add_from_template"
-                  phx-value-template-id={t.id}
-                >
-                  <div class="flex items-center gap-2">
-                    <span :if={Map.get(t, :type) == :gateway} class="badge badge-xs badge-secondary">
-                      stack
-                    </span>
-                    <span class="font-medium text-sm">{t.name}</span>
-                  </div>
-                  <span class="text-xs text-base-content/50 mt-0.5">{t.description}</span>
-                  <div :if={Map.get(t, :children)} class="text-xs text-base-content/40 mt-1">
-                    {length(Map.get(t, :children, []))} nodes inside
-                  </div>
-                  <div :if={t.oodn_keys != []} class="flex gap-1 mt-1.5 flex-wrap">
-                    <span
-                      :for={key <- t.oodn_keys}
-                      class="badge badge-xs badge-warning font-mono"
-                    >
-                      {"${" <> key <> "}"}
-                    </span>
-                  </div>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-    """
-  end
-
-  # --- OODN Node ---
-
-  attr :oodn_registry, :map, required: true
-  attr :position, :map, required: true
-
-  @oodn_max_visible 6
-
-  defp oodn_node(assigns) do
-    all_entries = assigns.oodn_registry |> Map.values() |> Enum.sort_by(& &1.key)
-    total_count = length(all_entries)
-    visible_entries = Enum.take(all_entries, @oodn_max_visible)
-    overflow = max(total_count - @oodn_max_visible, 0)
-    has_overflow = overflow > 0
-
-    row_height = 20
-    header_height = 32
-    padding = 10
-    footer = if has_overflow, do: 18, else: 0
-    width = 220
-    visible_count = max(length(visible_entries), 1)
-    height = header_height + padding + visible_count * row_height + padding + footer
-
-    assigns =
-      assign(assigns,
-        entries: visible_entries,
-        total_count: total_count,
-        overflow: overflow,
-        has_overflow: has_overflow,
-        width: width,
-        height: height,
-        row_height: row_height,
-        header_height: header_height,
-        padding: padding,
-        footer_y: header_height + padding + visible_count * row_height + 4
-      )
-
-    ~H"""
-    <g
-      class="oodn-node cursor-grab active:cursor-grabbing"
-      data-node-id="oodn"
-      data-node-type="oodn"
-      data-node-name="Config"
-      transform={"translate(#{@position.x}, #{@position.y})"}
-    >
-      <%!-- Shadow --%>
-      <rect x="2" y="2" width={@width} height={@height} rx="6" fill="black" opacity="0.08" />
-
-      <%!-- Body --%>
-      <rect
-        x="0"
-        y="0"
-        width={@width}
-        height={@height}
-        rx="6"
-        fill="#fef9c3"
-        stroke="#eab308"
-        stroke-width="2"
-      />
-
-      <%!-- Header --%>
-      <rect x="0" y="0" width={@width} height={@header_height} rx="6" fill="#eab308" opacity="0.25" />
-      <rect x="0" y={@header_height - 4} width={@width} height="4" fill="#eab308" opacity="0.25" />
-
-      <%!-- Header icon --%>
-      <text
-        x="10"
-        y={@header_height / 2 + 1}
-        dominant-baseline="central"
-        font-size="14"
-        class="select-none pointer-events-none"
-      >
-        &#9881;
-      </text>
-      <text
-        x="28"
-        y={@header_height / 2}
-        dominant-baseline="central"
-        font-size="12"
-        font-weight="bold"
-        fill="#92400e"
-        class="select-none pointer-events-none"
-      >
-        OODN Config
-      </text>
-      <text
-        x={@width - 10}
-        y={@header_height / 2}
-        dominant-baseline="central"
-        text-anchor="end"
-        font-size="10"
-        fill="#92400e"
-        opacity="0.5"
-        class="select-none pointer-events-none"
-      >
-        {@total_count}
-      </text>
-
-      <%!-- Separator line --%>
-      <line
-        x1="8"
-        y1={@header_height + 2}
-        x2={@width - 8}
-        y2={@header_height + 2}
-        stroke="#eab308"
-        opacity="0.3"
-      />
-
-      <%!-- Key-value rows --%>
-      <g :for={{entry, idx} <- Enum.with_index(@entries)}>
-        <%!-- Row background on hover --%>
-        <rect
-          x="4"
-          y={@header_height + @padding + idx * @row_height - 2}
-          width={@width - 8}
-          height={@row_height - 2}
-          rx="3"
-          fill="#eab308"
-          opacity="0.05"
-        />
-        <text
-          x="10"
-          y={@header_height + @padding + idx * @row_height + 12}
-          font-size="11"
-          font-family="monospace"
-          fill="#78350f"
-          class="select-none pointer-events-none"
-        >
-          {entry.key}
-        </text>
-        <text
-          x={@width - 10}
-          y={@header_height + @padding + idx * @row_height + 12}
-          text-anchor="end"
-          font-size="11"
-          font-family="monospace"
-          fill="#a16207"
-          class="select-none pointer-events-none"
-        >
-          {truncate_value(entry.value, 14)}
-        </text>
-      </g>
-
-      <%!-- Empty state --%>
-      <text
-        :if={@entries == []}
-        x={@width / 2}
-        y={@header_height + @padding + 12}
-        text-anchor="middle"
-        font-size="11"
-        fill="#a16207"
-        opacity="0.4"
-        class="select-none pointer-events-none"
-      >
-        Double-click to add variables
-      </text>
-
-      <%!-- Overflow indicator --%>
-      <text
-        :if={@has_overflow}
-        x={@width / 2}
-        y={@footer_y + 10}
-        text-anchor="middle"
-        font-size="10"
-        font-style="italic"
-        fill="#a16207"
-        opacity="0.7"
-        class="select-none pointer-events-none"
-      >
-        + {@overflow} more (double-click to view)
-      </text>
-    </g>
-    """
-  end
-
-  defp truncate_value(v, max) when byte_size(v) > max, do: String.slice(v, 0, max) <> ".."
-  defp truncate_value(v, _max), do: v
-
-  # --- OODN Editor ---
-
-  attr :oodn_registry, :map, required: true
-
-  defp oodn_editor(assigns) do
-    entries = assigns.oodn_registry |> Map.values() |> Enum.sort_by(& &1.key)
-    assigns = assign(assigns, :entries, entries)
-
-    ~H"""
-    <div class="fixed inset-0 z-40 overflow-y-auto">
-      <div class="fixed inset-0 bg-black/50" phx-click="close_oodn_editor" />
-      <div class="flex min-h-full items-center justify-center p-4">
-        <div class="relative bg-base-100 rounded-lg shadow-2xl w-[500px] max-h-[80vh] flex flex-col">
-          <div class="flex items-center justify-between p-4 border-b border-base-300">
-            <div>
-              <h2 class="font-semibold">OODN Config</h2>
-              <p class="text-xs text-base-content/50">
-                Global variables — use ${"{key}"} in leaf nodes
-              </p>
-            </div>
-            <button class="btn btn-sm btn-ghost" phx-click="close_oodn_editor">X</button>
-          </div>
-
-          <div class="flex-1 overflow-y-auto p-4 space-y-2">
-            <div
-              :for={entry <- @entries}
-              class="flex items-center gap-2"
-            >
-              <span class="font-mono text-sm font-semibold w-32 shrink-0 truncate" title={entry.key}>
-                {entry.key}
-              </span>
-              <form phx-submit="update_oodn" phx-value-oodn-id={entry.id} class="flex-1 flex gap-1">
-                <input
-                  type="text"
-                  name="value"
-                  value={entry.value}
-                  class="input input-sm input-bordered flex-1 font-mono"
-                />
-                <button type="submit" class="btn btn-sm btn-ghost">Save</button>
-              </form>
-              <button
-                class="btn btn-sm btn-ghost text-error"
-                phx-click="remove_oodn"
-                phx-value-oodn-id={entry.id}
-              >
-                x
-              </button>
-            </div>
-          </div>
-
-          <div class="p-4 border-t border-base-300">
-            <form phx-submit="add_oodn" class="flex gap-2">
-              <input
-                type="text"
-                name="key"
-                placeholder="key"
-                class="input input-sm input-bordered w-32 font-mono"
-                required
-              />
-              <input
-                type="text"
-                name="value"
-                placeholder="value"
-                class="input input-sm input-bordered flex-1 font-mono"
-                required
-              />
-              <button type="submit" class="btn btn-sm btn-warning">Add</button>
-            </form>
-          </div>
-        </div>
-      </div>
-    </div>
-    """
-  end
-
-  # --- Content Editor ---
-
-  attr :node, :map, required: true
-
-  defp content_editor(assigns) do
-    ~H"""
-    <div class="fixed inset-0 z-40 overflow-y-auto">
-      <div class="fixed inset-0 bg-black/50" phx-click="close_editor" />
-      <div class="flex min-h-full items-center justify-center p-4">
-        <div class="relative bg-base-100 rounded-lg shadow-2xl w-[700px] max-h-[80vh] flex flex-col">
-          <div class="flex items-center justify-between p-4 border-b border-base-300">
-            <div>
-              <h2 class="font-semibold">{@node.name}</h2>
-              <p class="text-xs text-base-content/50">Nix configuration fragment</p>
-            </div>
-            <button class="btn btn-sm btn-ghost" phx-click="close_editor">X</button>
-          </div>
-          <form
-            phx-submit="save_content"
-            phx-value-node-id={@node.id}
-            class="flex flex-col flex-1 min-h-0"
-          >
-            <div class="flex-1 p-4 min-h-0">
-              <textarea
-                name="content"
-                class="textarea textarea-bordered w-full h-full min-h-[300px] font-mono text-sm"
-                placeholder={"# Nix config for #{@node.name}\n# e.g.:\n# services.openssh.enable = true;\n# services.openssh.settings.PermitRootLogin = \"no\";"}
-                phx-debounce="500"
-              >{@node.content || ""}</textarea>
-            </div>
-            <div class="flex justify-end gap-2 p-4 border-t border-base-300">
-              <button type="button" class="btn btn-sm btn-ghost" phx-click="close_editor">
-                Cancel
-              </button>
-              <button type="submit" class="btn btn-sm btn-primary">Save</button>
-            </div>
-          </form>
-        </div>
-      </div>
-    </div>
-    """
-  end
-
-  # --- Generated Output ---
-
-  attr :output, :string, required: true
-  attr :path, :string, default: nil
-  attr :deploy_status, :string, default: nil
-  attr :deploy_output, :string, default: nil
-
-  defp generated_output(assigns) do
-    ~H"""
-    <div class="fixed inset-0 z-40 overflow-y-auto">
-      <div class="fixed inset-0 bg-black/50" phx-click="close_generated" />
-      <div class="flex min-h-full items-center justify-center p-4">
-        <div class="relative bg-base-100 rounded-lg shadow-2xl w-[800px] max-h-[85vh] flex flex-col">
-          <div class="flex items-center justify-between p-4 border-b border-base-300 shrink-0">
-            <div>
-              <h2 class="font-semibold">Generated Output</h2>
-              <p :if={@path} class="text-xs text-success">Saved to: {@path}</p>
-            </div>
-            <button class="btn btn-sm btn-ghost" phx-click="close_generated">X</button>
-          </div>
-
-          <%!-- Scrollable content area --%>
-          <div class="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
-            <pre class="bg-base-200 rounded-lg p-4 text-sm font-mono whitespace-pre overflow-x-auto"><code>{@output}</code></pre>
-
-            <%!-- Deploy status inside scroll area --%>
-            <div
-              :if={@deploy_status}
-              class={[
-                "rounded-lg p-3 text-sm font-mono whitespace-pre-wrap",
-                @deploy_status == "running" && "bg-info/10 text-info",
-                @deploy_status == "success" && "bg-success/10 text-success",
-                @deploy_status == "error" && "bg-error/10 text-error"
-              ]}
-            >
-              <div class="font-semibold mb-1">
-                <span :if={@deploy_status == "running"}>Deploying...</span>
-                <span :if={@deploy_status == "success"}>Deploy successful</span>
-                <span :if={@deploy_status == "error"}>Deploy failed</span>
-              </div>
-              <div :if={@deploy_output != ""}>{@deploy_output}</div>
-            </div>
-          </div>
-
-          <%!-- Fixed footer --%>
-          <div class="flex flex-wrap justify-end gap-2 p-4 border-t border-base-300 shrink-0">
-            <button type="button" class="btn btn-sm btn-ghost" phx-click="close_generated">
-              Close
-            </button>
-            <button
-              type="button"
-              class={[
-                "btn btn-sm btn-outline btn-error",
-                @deploy_status == "running" && "btn-disabled"
-              ]}
-              phx-click="rollback"
-              disabled={@deploy_status == "running"}
-              data-confirm="Rollback to previous generation?"
-              title="nixos-rebuild switch --rollback"
-            >
-              Rollback
-            </button>
-            <button
-              type="button"
-              class={[
-                "btn btn-sm btn-outline btn-info",
-                @deploy_status == "running" && "btn-disabled"
-              ]}
-              phx-click="show_diff"
-              disabled={@deploy_status == "running"}
-              title="Show diff against current config on machine"
-            >
-              Diff
-            </button>
-            <button
-              type="button"
-              class={[
-                "btn btn-sm btn-outline btn-secondary",
-                @deploy_status == "running" && "btn-disabled"
-              ]}
-              phx-click="reconfigure"
-              phx-value-mode="dry_activate"
-              disabled={@deploy_status == "running"}
-              title="nixos-rebuild dry-activate — show what would change"
-            >
-              Dry Run
-            </button>
-            <button
-              type="button"
-              class={[
-                "btn btn-sm btn-secondary",
-                @deploy_status == "running" && "btn-disabled loading"
-              ]}
-              phx-click="reconfigure"
-              phx-value-mode="test"
-              disabled={@deploy_status == "running"}
-              title="nixos-rebuild test — apply without boot entry"
-            >
-              Test
-            </button>
-            <button
-              type="button"
-              class={["btn btn-sm btn-warning", @deploy_status == "running" && "btn-disabled loading"]}
-              phx-click="reconfigure"
-              phx-value-mode="switch"
-              disabled={@deploy_status == "running"}
-              title="nixos-rebuild switch — apply and add to boot menu"
-            >
-              Switch
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-    """
-  end
-
-  # --- Graph Manager ---
-
-  attr :graph_list, :list, required: true
-  attr :current_file, :string, default: nil
-
-  defp graph_manager(assigns) do
-    ~H"""
-    <div class="fixed inset-0 z-40 overflow-y-auto">
-      <div class="fixed inset-0 bg-black/50" phx-click="close_graph_manager" />
-      <div class="flex min-h-full items-center justify-center p-4">
-        <div class="relative bg-base-100 rounded-lg shadow-2xl w-[500px] max-h-[80vh] flex flex-col">
-          <div class="flex items-center justify-between p-4 border-b border-base-300">
-            <h2 class="font-semibold">Graph Manager</h2>
-            <button class="btn btn-sm btn-ghost" phx-click="close_graph_manager">X</button>
-          </div>
-
-          <%!-- New graph --%>
-          <div class="p-4 border-b border-base-300">
-            <form phx-submit="new_graph_submit" class="flex gap-2">
-              <input
-                type="text"
-                name="name"
-                placeholder="New graph name..."
-                class="input input-sm input-bordered flex-1"
-                required
-              />
-              <button type="submit" class="btn btn-sm btn-primary">New</button>
-            </form>
-          </div>
-
-          <%!-- Save As --%>
-          <div class="px-4 py-3 border-b border-base-300">
-            <form phx-submit="save_as_submit" class="flex gap-2">
-              <input
-                type="text"
-                name="name"
-                placeholder="Save current graph as..."
-                class="input input-sm input-bordered flex-1"
-                required
-              />
-              <button type="submit" class="btn btn-sm btn-secondary">Save As</button>
-            </form>
-          </div>
-
-          <%!-- File list --%>
-          <div class="flex-1 overflow-y-auto p-4">
-            <h3 class="text-xs font-semibold text-base-content/60 mb-3 uppercase">Saved Graphs</h3>
-            <div :if={@graph_list == []} class="text-sm text-base-content/40 text-center py-4">
-              No saved graphs yet
-            </div>
-            <div class="space-y-1">
-              <div
-                :for={item <- @graph_list}
-                class={[
-                  "flex items-center gap-3 px-3 py-2 rounded",
-                  item.filename == @current_file && "bg-primary/10 border border-primary/20",
-                  item.filename != @current_file && "hover:bg-base-200"
-                ]}
-              >
-                <div class="flex-1 min-w-0">
-                  <div class="text-sm font-medium truncate">{item.name}</div>
-                  <div class="text-xs text-base-content/40">{item.filename}</div>
-                </div>
-                <div class="flex gap-1 shrink-0">
-                  <button
-                    :if={item.filename != @current_file}
-                    class="btn btn-xs btn-ghost"
-                    phx-click="load_graph_file"
-                    phx-value-filename={item.filename}
-                  >
-                    Load
-                  </button>
-                  <span :if={item.filename == @current_file} class="badge badge-xs badge-primary">
-                    active
-                  </span>
-                  <button
-                    :if={item.filename != @current_file}
-                    class="btn btn-xs btn-ghost text-error"
-                    phx-click="delete_graph_file"
-                    phx-value-filename={item.filename}
-                    data-confirm="Delete this graph?"
-                  >
-                    Del
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-    """
-  end
-
-  # --- Helpers ---
-
-  defp has_content?(%{content: c}) when is_binary(c) and c != "", do: true
-  defp has_content?(_), do: false
-
-  defp node_color(:input), do: "bg-success"
-  defp node_color(:output), do: "bg-error"
-  defp node_color(:leaf), do: "bg-info"
-  defp node_color(:gateway), do: "bg-secondary"
-  defp node_color(_), do: "bg-base-content/30"
-
-  defp node_rect_class(:input, true), do: "fill-success/20 stroke-success"
-  defp node_rect_class(:input, false), do: "fill-success/10 stroke-success/50"
-  defp node_rect_class(:output, true), do: "fill-error/20 stroke-error"
-  defp node_rect_class(:output, false), do: "fill-error/10 stroke-error/50"
-  defp node_rect_class(:leaf, true), do: "fill-info/20 stroke-info"
-  defp node_rect_class(:leaf, false), do: "fill-info/10 stroke-info/50"
-  defp node_rect_class(:gateway, true), do: "fill-secondary/20 stroke-secondary"
-  defp node_rect_class(:gateway, false), do: "fill-secondary/10 stroke-secondary/50"
-
-  defp node_rect_class(_, selected),
-    do:
-      if(selected,
-        do: "fill-base-300 stroke-base-content",
-        else: "fill-base-200 stroke-base-content/30"
-      )
-
-  defp node_text_class(true), do: "fill-base-content font-semibold"
-  defp node_text_class(false), do: "fill-base-content/70"
 end

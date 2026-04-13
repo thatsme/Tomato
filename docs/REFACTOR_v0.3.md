@@ -1,5 +1,33 @@
 # Tomato v0.3 — Refactor Plan
 
+## Status (as of 2026-04-13)
+
+| Section | Status |
+|---|---|
+| §1 GraphLive split | Done — canvas / modals / sidebar components + 8 handler modules all extracted |
+| §2 Store split | Done (`4f069d6`) |
+| §3 Deploy split + SSH key auth | Done (`27fd2f7`) |
+| §4 Local Nix-fragment validation | Done (`a9cd61f` validator + `13c8dad` walker + `717b159` LiveView wiring) |
+
+**v0.3 is feature-complete.** Branch ready for merge as `v0.3.0`.
+
+`lib/tomato_web/live/graph_live.ex` is now **387 lines** (from ~1600 at the start of v0.3). Contains only `mount`, `render`, the `handle_event` dispatch table, two `handle_info` clauses, and the `stop_propagation` canvas plumbing stub.
+
+**Handler modules under `lib/tomato_web/live/graph_live/`:**
+
+| Module | Clauses | Role |
+|---|---|---|
+| `node_handlers.ex` | 14 | node CRUD, selection, content editor |
+| `edge_handlers.ex` | 6 | edge mutation + connection-mode lifecycle |
+| `navigation_handlers.ex` | 4 + 4 helpers | enter/breadcrumb/search/goto |
+| `machine_handlers.ex` | 1 | `update_machine` |
+| `oodn_handlers.ex` | 6 | OODN registry |
+| `deploy_handlers.ex` | 6 + 2 `handle_info` | deploy pipeline |
+| `graph_state_handlers.ex` | 9 | backend toggle + history + file lifecycle |
+| `template_handlers.ex` | 3 | template picker + add |
+
+**Giulia post-refactor**: GraphLive god-module score dropped from 198 → 116 (#1 → #2), named function count 10 → 4. Spec ratio improved ~49% → ~58% from handler specs. 132 tests, 0 failures.
+
 ## Why
 
 Giulia detected three god modules growing out of control during v0.2:
@@ -15,6 +43,8 @@ These need splitting before they become unmanageable.
 ---
 
 ## 1. Split `TomatoWeb.GraphLive`
+
+**Status:** done. Canvas (`c81d879`), modals (`22809c0`), sidebar (`f96e643`), and all 8 handler modules (`232c1bc` → `79ccc2b`) extracted. `graph_live.ex` is 387 lines.
 
 Currently 27 handlers + 6 SVG components + 6 modal components in one file (~1600 lines).
 
@@ -61,6 +91,8 @@ end
 
 ## 2. Split `Tomato.Store`
 
+**Status:** done (`4f069d6`). Additionally, `bf44913` parameterized the store name and scoped the PubSub topic per instance to enable isolated test instances — see §7 below.
+
 Currently 44 functions managing graph state, persistence, history, OODN, machines, gateways, graph files.
 
 ### Target structure
@@ -87,9 +119,11 @@ lib/tomato/store/
 
 ---
 
-## 3. Split `Tomato.Deploy`
+## 3. Split `Tomato.Deploy` (+ SSH key auth)
 
-Currently 16 functions handling SSH connection, SFTP, exec, diff, rebuild commands, modes, rollback.
+**Status:** done (`27fd2f7`).
+
+Currently 16 functions handling SSH connection, SFTP, exec, diff, rebuild commands, modes, rollback. Today the connection path is **password-only** (`deploy.ex:156`) — credentials live in `config/deploy.secret.exs` or env vars and are passed in plain text to `:ssh.connect/3`. This refactor also closes that gap.
 
 ### Target structure
 
@@ -100,7 +134,7 @@ lib/tomato/deploy/
   sftp.ex                       # upload, read_file, make_dir
   rebuild.ex                    # rebuild_command, apply_config
   diff.ex                       # simple_diff
-  config.ex                     # merge_config
+  config.ex                     # merge_config + auth resolution
 ```
 
 ### Approach
@@ -108,38 +142,70 @@ lib/tomato/deploy/
 1. Extract SSH/SFTP into focused modules
 2. Public `Deploy` module orchestrates by calling them
 3. Each module is independently testable
+4. **SSH key authentication** — `ssh.ex` resolves credentials in this order:
+   - explicit `identity_file` in opts / config / `TOMATO_DEPLOY_IDENTITY_FILE` env var
+   - `~/.ssh/id_ed25519`, `~/.ssh/id_rsa` (auto-discovered, in that order)
+   - fall back to password auth (existing behaviour) only if no key is found
+   Implemented via `:ssh.connect/3` with `user_dir` pointing at the key's directory; password remains as a last resort for lab use, with a one-line `Logger.warning` so users know they're on the legacy path.
+5. **Config/env additions** — `TOMATO_DEPLOY_IDENTITY_FILE`, `:identity_file` key in `deploy.secret.exs.example`, README updated to recommend keys.
 
 **Complexity target:** Deploy public API < 20, each helper module < 25.
 
 ---
 
-## 4. Refactor Order
+## 4. Local Nix-fragment validation
 
-1. **Deploy** first — smallest, clearest split, no UI changes
-2. **Store** next — affects mutations but pure functions are easier to test
-3. **GraphLive** last — biggest change, depends on having stable Store API
+**Status:** done.
+
+Three commits on `v0.3`:
+
+1. `a9cd61f` — `Tomato.NixValidator` wraps `nix-instantiate --parse` against a `{ config, pkgs, lib, ... }: { ... }` harness so attribute-set bodies parse correctly. Stderr is cleaned (temp path redacted). `available?/0` checks PATH.
+2. `13c8dad` — `Tomato.Walker.validate/1` runs a parallel traversal of the graph (not a wrapper of `walk/1`) so per-leaf errors carry `node_id` and `node_name`. Returns `:ok | :disabled | :unavailable | {:error, [%{node_id, node_name, reason}]}`. Each leaf is interpolated with the OODN it would see in `walk/1` (machine OODN inside gateways, global OODN at root) before validation. `walk/1` is intentionally untouched — generated output stays byte-identical.
+3. `717b159` — LiveView wiring: `DeployHandlers.generate/2` calls `Walker.validate/1` after `walk/1` and assigns `:validation_result`; `ModalComponents.generated_output/1` renders a `validation_panel` with one clause head per state. Error rows chain `JS.push("select_node") |> JS.push("close_generated")` so clicking lands on the offending node.
+
+Errors are non-blocking — Deploy/Switch buttons stay enabled because the local Nix may differ from the target machine's Nix.
+
+`test_helper.exs` auto-excludes the `:nix_cli` tag when `nix-instantiate` isn't on PATH, so the suite stays green on Windows dev boxes without Nix.
+
+### Known limitation
+
+If the offending leaf lives inside a machine gateway, the `select_node` push selects a node not in the current canvas (the user is viewing the root subgraph). `NodeHandlers.select/2` only sets `selected_node_id`; it does not navigate into the parent subgraph. **Follow-up needed**: a `navigate_to_node` handler that walks the breadcrumb to enter the right gateway before selecting. Non-trivial — needs its own session.
+
+**Why a separate section, not part of a god-module split:** this is new behaviour, lives in `walker.ex` + a new module, and is independent of the three refactors. Slot it in whenever the Deploy or Store work has a quiet moment.
 
 ---
 
-## 5. Constraints
+## 5. Refactor Order
 
-- **No behaviour changes** — all 69 tests must still pass after each refactor
-- **Phase by phase** — one god module at a time, push between each
+1. ~~**Deploy + SSH key auth** first~~ ✓
+2. ~~**Store** next~~ ✓
+3. ~~**GraphLive** last — biggest change~~ ✓ (canvas, modals, sidebar, 8 handler modules)
+4. **Nix-fragment validator** — the only remaining v0.3 item. Next session.
+
+---
+
+## 6. Constraints
+
+- **No behaviour changes** in the splits — the existing test suite must still pass after each refactor (new feature work in §3.4 and §4 obviously adds behaviour, with its own tests)
+- **Phase by phase** — one god module at a time, commit between each (single `v0.3` branch, no per-phase PRs since the project is pre-fork)
 - **Giulia validates** — rerun conventions check after each split
 
 ---
 
-## 6. New Tests
+## 7. New Tests
 
 For each split, add module-level tests:
 
-- `test/tomato/store/mutations_test.exs` — pure mutation tests (no GenServer)
-- `test/tomato/store/persistence_test.exs` — JSON roundtrip tests
-- `test/tomato/deploy/ssh_test.exs` — connection mocking
-- `test/tomato/deploy/diff_test.exs` — already exists, expand
-- `test/tomato_web/live/handlers/*_test.exs` — handler unit tests
+- ✓ `test/tomato/store/mutations_test.exs` — pure mutation tests (no GenServer)
+- ✓ `test/tomato/store/persistence_test.exs` — JSON roundtrip tests
+- ⬜ `test/tomato/deploy/ssh_test.exs` — connection mocking, **key vs password resolution** (not yet)
+- ✓ `test/tomato/deploy/config_test.exs` — config resolution + auth ordering
+- ⬜ `test/tomato/nix_validator_test.exs` — fragment parse success/failure, fallback when `nix` is missing
+- ⬜ `test/tomato/walker_test.exs` — extend with fragment-validation error aggregation
+- ⬜ `test/tomato_web/live/handlers/*_test.exs` — handler unit tests (will come with the handler split)
+- ✓ `test/tomato_web/live/graph_live_test.exs` — GraphLive smoke test (15 cases, isolated per-test store, covers mount/CRUD/navigation/modals/undo-redo)
 
-**Target:** 100+ tests after refactor.
+**Target:** 100+ tests after refactor. **Current:** 129 tests, 0 failures.
 
 ---
 

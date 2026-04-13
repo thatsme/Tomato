@@ -191,6 +191,251 @@ defmodule Tomato.MultiMachineTest do
     Graph.put_subgraph(graph, root)
   end
 
+  describe "shared fragment target filtering" do
+    test "shared :nixos fragment is excluded from Home Manager machines" do
+      graph = build_mixed_graph_with_shared_nixos()
+      graph = %{graph | backend: :flake}
+      output = Walker.walk(graph)
+
+      # The shared NixOS firewall must appear in the NixOS server
+      assert output =~ "networking.firewall.enable = true;"
+
+      # ...but exactly once — it must NOT appear in the HM laptop.
+      # split on the fragment: n occurrences => n+1 pieces.
+      occurrences = output |> String.split("networking.firewall.enable = true;") |> length()
+
+      assert occurrences == 2,
+             "expected shared :nixos fragment in exactly 1 machine, got #{occurrences - 1}"
+    end
+
+    test "shared :home_manager fragment is excluded from NixOS machines" do
+      graph = build_mixed_graph_with_shared_hm()
+      graph = %{graph | backend: :flake}
+      output = Walker.walk(graph)
+
+      # Shared HM-only fragment must appear in the HM laptop
+      assert output =~ "programs.direnv.enable = true;"
+
+      # ...but not in the NixOS server
+      occurrences = output |> String.split("programs.direnv.enable = true;") |> length()
+
+      assert occurrences == 2,
+             "expected shared :home_manager fragment in exactly 1 machine, got #{occurrences - 1}"
+    end
+
+    test "shared :all fragment appears in both NixOS and HM machines" do
+      graph = build_mixed_graph_with_shared_all()
+      graph = %{graph | backend: :flake}
+      output = Walker.walk(graph)
+
+      # Fragment tagged :all must appear in BOTH configs
+      occurrences = output |> String.split("universal.marker = true;") |> length()
+
+      assert occurrences == 3,
+             "expected :all fragment in both machines, got #{occurrences - 1}"
+    end
+
+    test "in-machine leaves are preserved regardless of target" do
+      # The default leaf target is :nixos, but content the user explicitly
+      # places inside a Home Manager machine gateway must still appear in
+      # that machine's config — the gateway structure is the scope, not
+      # the leaf's target tag. Filtering in-machine content by target
+      # would strip the Git leaf out of build_mixed_graph/0's HM machine.
+      graph = build_mixed_graph()
+      graph = %{graph | backend: :flake}
+      output = Walker.walk(graph)
+
+      # Git leaf is inside the HM macbook gateway; must appear in output.
+      assert output =~ "programs.git.enable = true;"
+      # SSH leaf is inside the NixOS server gateway; must appear too.
+      assert output =~ "services.openssh.enable = true;"
+    end
+  end
+
+  defp build_mixed_graph_with_shared_nixos do
+    add_shared_leaf(build_mixed_graph(), "Firewall", "networking.firewall.enable = true;", :nixos)
+  end
+
+  defp build_mixed_graph_with_shared_hm do
+    add_shared_leaf(build_mixed_graph(), "Direnv", "programs.direnv.enable = true;", :home_manager)
+  end
+
+  defp build_mixed_graph_with_shared_all do
+    add_shared_leaf(build_mixed_graph(), "Universal", "universal.marker = true;", :all)
+  end
+
+  defp add_shared_leaf(graph, name, content, target) do
+    root = Graph.root_subgraph(graph)
+    input = Subgraph.input_node(root)
+
+    shared = Node.new(type: :leaf, name: name, content: content, target: target)
+    root = Subgraph.add_node(root, shared)
+    root = Subgraph.add_edge(root, Edge.new(input.id, shared.id))
+
+    Graph.put_subgraph(graph, root)
+  end
+
+  describe "per-machine oodn_overrides" do
+    test "machine oodn_overrides shadow global OODN for that machine only" do
+      graph = build_two_nginx_machines_with_overrides()
+      graph = %{graph | backend: :flake}
+      output = Walker.walk(graph)
+
+      # Each machine should get its own nginx_port via the override
+      assert output =~ ~s(nginx on port 8080)
+      assert output =~ ~s(nginx on port 8081)
+    end
+
+    test "unset override falls through to global OODN" do
+      graph = build_nginx_with_only_global_port()
+      graph = %{graph | backend: :flake}
+      output = Walker.walk(graph)
+
+      # Machine without an override uses the global nginx_port=80
+      assert output =~ ~s(nginx on port 80)
+    end
+
+    test "override wins over hardcoded hostname" do
+      # oodn_overrides is merged AFTER the hardcoded machine keys, so a
+      # user who sets `hostname` in overrides can shadow the gateway's
+      # machine.hostname. This is intentional — overrides are the highest
+      # precedence layer.
+      graph = build_machine_with_override_hostname()
+      graph = %{graph | backend: :flake}
+      output = Walker.walk(graph)
+
+      assert output =~ ~s(hostname-via-override)
+    end
+  end
+
+  defp build_two_nginx_machines_with_overrides do
+    graph = Graph.new("two-nginx")
+    oodn = Tomato.OODN.new("nginx_port", "80")
+    graph = %{graph | oodn_registry: %{oodn.id => oodn}}
+
+    root = Graph.root_subgraph(graph)
+    input = Subgraph.input_node(root)
+    output = Subgraph.output_node(root)
+
+    {root, graph} = add_nginx_machine(graph, root, "srv-a", %{"nginx_port" => "8080"}, 100)
+    {root, graph} = add_nginx_machine(graph, root, "srv-b", %{"nginx_port" => "8081"}, 300)
+
+    machines = Walker.find_machines(root)
+    [m1, m2] = machines
+
+    root =
+      root
+      |> Subgraph.add_edge(Edge.new(input.id, m1.id))
+      |> Subgraph.add_edge(Edge.new(input.id, m2.id))
+      |> Subgraph.add_edge(Edge.new(m1.id, output.id))
+      |> Subgraph.add_edge(Edge.new(m2.id, output.id))
+
+    Graph.put_subgraph(graph, root)
+  end
+
+  defp build_nginx_with_only_global_port do
+    graph = Graph.new("one-nginx")
+    oodn = Tomato.OODN.new("nginx_port", "80")
+    graph = %{graph | oodn_registry: %{oodn.id => oodn}}
+
+    root = Graph.root_subgraph(graph)
+    input = Subgraph.input_node(root)
+    output = Subgraph.output_node(root)
+
+    {root, graph} = add_nginx_machine(graph, root, "srv", %{}, 200)
+    [m] = Walker.find_machines(root)
+
+    root =
+      root
+      |> Subgraph.add_edge(Edge.new(input.id, m.id))
+      |> Subgraph.add_edge(Edge.new(m.id, output.id))
+
+    Graph.put_subgraph(graph, root)
+  end
+
+  defp build_machine_with_override_hostname do
+    graph = Graph.new("override-host")
+
+    root = Graph.root_subgraph(graph)
+    input = Subgraph.input_node(root)
+    output = Subgraph.output_node(root)
+
+    # Build a machine whose hardcoded hostname is "srv-real" but whose
+    # oodn_overrides sets hostname="hostname-via-override". The leaf
+    # inside interpolates ${hostname}.
+    child = Subgraph.new(name: "srv-real", floor: 1)
+    cin = Subgraph.input_node(child)
+    cout = Subgraph.output_node(child)
+    leaf = Node.new(type: :leaf, name: "Host", content: ~S(host.label = "${hostname}";))
+
+    child =
+      child
+      |> Subgraph.add_node(leaf)
+      |> Subgraph.add_edge(Edge.new(cin.id, leaf.id))
+      |> Subgraph.add_edge(Edge.new(leaf.id, cout.id))
+
+    machine =
+      Node.new(
+        type: :gateway,
+        name: "srv-real",
+        subgraph_id: child.id,
+        machine: %{
+          hostname: "srv-real",
+          system: "x86_64-linux",
+          state_version: "24.11",
+          type: :nixos,
+          oodn_overrides: %{"hostname" => "hostname-via-override"}
+        }
+      )
+
+    root =
+      root
+      |> Subgraph.add_node(machine)
+      |> Subgraph.add_edge(Edge.new(input.id, machine.id))
+      |> Subgraph.add_edge(Edge.new(machine.id, output.id))
+
+    graph |> Graph.put_subgraph(root) |> Graph.put_subgraph(child)
+  end
+
+  # Build an nginx-serving machine subgraph and return {root, graph} with
+  # the machine added at the given root position.
+  defp add_nginx_machine(graph, root, hostname, overrides, x) do
+    child = Subgraph.new(name: hostname, floor: 1)
+    cin = Subgraph.input_node(child)
+    cout = Subgraph.output_node(child)
+
+    leaf =
+      Node.new(
+        type: :leaf,
+        name: "Nginx",
+        content: ~S(nginx on port ${nginx_port})
+      )
+
+    child =
+      child
+      |> Subgraph.add_node(leaf)
+      |> Subgraph.add_edge(Edge.new(cin.id, leaf.id))
+      |> Subgraph.add_edge(Edge.new(leaf.id, cout.id))
+
+    machine =
+      Node.new(
+        type: :gateway,
+        name: hostname,
+        subgraph_id: child.id,
+        position: %{x: x, y: 200},
+        machine: %{
+          hostname: hostname,
+          system: "x86_64-linux",
+          state_version: "24.11",
+          type: :nixos,
+          oodn_overrides: overrides
+        }
+      )
+
+    root = Subgraph.add_node(root, machine)
+    {root, graph |> Graph.put_subgraph(child)}
+  end
+
   describe "Home Manager machines" do
     test "home_manager machine generates homeConfigurations" do
       graph = build_mixed_graph()
