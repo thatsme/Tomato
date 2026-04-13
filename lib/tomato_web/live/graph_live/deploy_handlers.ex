@@ -48,6 +48,7 @@ defmodule TomatoWeb.GraphLive.DeployHandlers do
   def generate(_params, socket) do
     graph = socket.assigns.graph
     output = Tomato.Walker.walk(graph)
+    validation = Tomato.Walker.validate(graph)
 
     # Write .nix file to disk
     generated_dir = Path.expand("priv/generated", File.cwd!())
@@ -66,6 +67,7 @@ defmodule TomatoWeb.GraphLive.DeployHandlers do
      socket
      |> assign(:generated_output, output)
      |> assign(:generated_path, nix_path)
+     |> assign(:validation_result, validation)
      |> assign(:show_generated, true)}
   end
 

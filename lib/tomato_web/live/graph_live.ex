@@ -49,6 +49,7 @@ defmodule TomatoWeb.GraphLive do
      |> assign(:show_generated, false)
      |> assign(:generated_output, "")
      |> assign(:generated_path, nil)
+     |> assign(:validation_result, :disabled)
      |> assign(:deploy_status, nil)
      |> assign(:deploy_output, "")
      |> assign(:show_graph_manager, false)
@@ -370,6 +371,7 @@ defmodule TomatoWeb.GraphLive do
         :if={@show_generated}
         output={@generated_output}
         path={@generated_path}
+        validation={@validation_result}
         deploy_status={@deploy_status}
         deploy_output={@deploy_output}
       />

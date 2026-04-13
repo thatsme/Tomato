@@ -16,6 +16,8 @@ defmodule TomatoWeb.GraphLive.ModalComponents do
 
   use Phoenix.Component
 
+  alias Phoenix.LiveView.JS
+
   # --- Template Picker ---
 
   def template_picker(assigns) do
@@ -199,8 +201,62 @@ defmodule TomatoWeb.GraphLive.ModalComponents do
 
   # --- Generated Output ---
 
+  defp validation_panel(%{validation: :ok} = assigns) do
+    ~H"""
+    <div class="rounded-lg p-3 text-sm bg-success/10 text-success flex items-center gap-2">
+      <span class="font-semibold">Nix syntax OK</span>
+      <span class="text-xs opacity-70">all leaf fragments parse cleanly</span>
+    </div>
+    """
+  end
+
+  defp validation_panel(%{validation: :unavailable} = assigns) do
+    ~H"""
+    <div class="rounded-lg p-3 text-sm bg-warning/10 text-warning">
+      <div class="font-semibold">Nix CLI not found</div>
+      <div class="text-xs opacity-70">
+        Install <code>nix-instantiate</code> to enable local syntax validation.
+      </div>
+    </div>
+    """
+  end
+
+  defp validation_panel(%{validation: {:error, _errs}} = assigns) do
+    ~H"""
+    <div class="rounded-lg bg-error/10 text-error">
+      <div class="p-3 border-b border-error/20">
+        <div class="font-semibold">
+          Nix syntax errors ({length(elem(@validation, 1))})
+        </div>
+        <div class="text-xs opacity-70">
+          Local check only — Deploy/Switch remain enabled (target Nix may differ).
+        </div>
+      </div>
+      <ul class="divide-y divide-error/20">
+        <li
+          :for={err <- elem(@validation, 1)}
+          class="p-3 cursor-pointer hover:bg-error/5"
+          phx-click={
+            JS.push("select_node", value: %{"node-id" => err.node_id})
+            |> JS.push("close_generated")
+          }
+        >
+          <div class="font-mono text-xs font-semibold">{err.node_name}</div>
+          <pre class="text-xs whitespace-pre-wrap mt-1 opacity-80">{err.reason}</pre>
+        </li>
+      </ul>
+    </div>
+    """
+  end
+
+  defp validation_panel(%{validation: :disabled} = assigns) do
+    ~H"""
+    """
+  end
+
   attr :output, :string, required: true
   attr :path, :string, default: nil
+  attr :validation, :any, default: :disabled
   attr :deploy_status, :string, default: nil
   attr :deploy_output, :string, default: nil
 
@@ -220,6 +276,7 @@ defmodule TomatoWeb.GraphLive.ModalComponents do
 
           <%!-- Scrollable content area --%>
           <div class="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
+            <.validation_panel validation={@validation} />
             <pre class="bg-base-200 rounded-lg p-4 text-sm font-mono whitespace-pre overflow-x-auto"><code>{@output}</code></pre>
 
             <%!-- Deploy status inside scroll area --%>

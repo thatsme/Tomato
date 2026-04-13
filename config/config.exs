@@ -10,6 +10,10 @@ import Config
 config :tomato,
   generators: [timestamp_type: :utc_datetime]
 
+# Local Nix syntax validation (parse-only) for generated leaf fragments.
+# Set enabled: false to skip even when nix-instantiate is on PATH.
+config :tomato, :nix_validation, enabled: true
+
 # NixOS deploy target — override in config/deploy.secret.exs or env vars
 # See README.md for setup instructions.
 #
