@@ -199,4 +199,18 @@ defmodule Tomato.StoreTest do
       assert current.name == "other"
     end
   end
+
+  describe "topic/1" do
+    test "strips Elixir. prefix for module atoms" do
+      assert Store.topic(Tomato.Store) == "graph:updates:Tomato.Store"
+    end
+
+    test "formats plain atoms without modification" do
+      assert Store.topic(:test_store_123) == "graph:updates:test_store_123"
+    end
+
+    test "falls back to anonymous for nil" do
+      assert Store.topic(nil) == "graph:updates:anonymous"
+    end
+  end
 end
