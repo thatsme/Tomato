@@ -8,7 +8,6 @@ defmodule TomatoWeb.GraphLive.CanvasComponents do
     * `graph_node/1` — a single node on the canvas (leaf/gateway/machine)
     * `edge_line/1` — a Bezier edge between two nodes
     * `oodn_node/1` — the OODN config panel rendered on the root floor
-    * `minimap/1` — bottom-right overview of the current subgraph
 
   The style and geometry helpers (`node_color/1`, `node_rect_class/2`,
   `node_text_class/1`, `has_content?/1`, `node_half_width/1`, etc.) are
@@ -54,16 +53,6 @@ defmodule TomatoWeb.GraphLive.CanvasComponents do
   def node_text_class(true), do: "fill-base-content font-semibold"
   def node_text_class(false), do: "fill-base-content/70"
 
-  @doc "Hex colour for a node dot in the minimap overview."
-  def minimap_color(%{type: :input}), do: "#10b981"
-  def minimap_color(%{type: :output}), do: "#ef4444"
-
-  def minimap_color(%{type: :gateway} = node) do
-    if Tomato.Node.machine?(node), do: "#d97706", else: "#a855f7"
-  end
-
-  def minimap_color(_), do: "#06b6d4"
-
   @doc """
   Half-width of the node rectangle in canvas units — used by edge_line
   to position the Bezier curve endpoints just outside the node shape.
@@ -106,69 +95,6 @@ defmodule TomatoWeb.GraphLive.CanvasComponents do
   def truncate_value(v, _max), do: v
 
   # --- Canvas components ---
-
-  attr :subgraph, :map, required: true
-
-  def minimap(assigns) do
-    nodes = Map.values(assigns.subgraph.nodes)
-
-    {min_x, max_x, min_y, max_y} =
-      if nodes == [] do
-        {0, 800, 0, 600}
-      else
-        xs = Enum.map(nodes, & &1.position.x)
-        ys = Enum.map(nodes, & &1.position.y)
-        {Enum.min(xs) - 100, Enum.max(xs) + 100, Enum.min(ys) - 100, Enum.max(ys) + 100}
-      end
-
-    width = max(max_x - min_x, 100)
-    height = max(max_y - min_y, 100)
-
-    assigns =
-      assigns
-      |> assign(:nodes, nodes)
-      |> assign(:vb_x, min_x)
-      |> assign(:vb_y, min_y)
-      |> assign(:vb_w, width)
-      |> assign(:vb_h, height)
-
-    ~H"""
-    <div class="absolute bottom-4 right-4 z-10 bg-base-100/90 border border-base-300 rounded-lg shadow-lg p-1">
-      <div class="text-[9px] text-base-content/40 px-1 mb-0.5 font-semibold uppercase">
-        Minimap
-      </div>
-      <svg
-        width="180"
-        height="120"
-        viewBox={"#{@vb_x} #{@vb_y} #{@vb_w} #{@vb_h}"}
-        class="bg-base-200 rounded"
-      >
-        <%!-- Edges --%>
-        <line
-          :for={{_id, edge} <- @subgraph.edges}
-          x1={(Map.get(@subgraph.nodes, edge.from) || %{position: %{x: 0}}).position.x}
-          y1={(Map.get(@subgraph.nodes, edge.from) || %{position: %{y: 0}}).position.y}
-          x2={(Map.get(@subgraph.nodes, edge.to) || %{position: %{x: 0}}).position.x}
-          y2={(Map.get(@subgraph.nodes, edge.to) || %{position: %{y: 0}}).position.y}
-          stroke="currentColor"
-          stroke-width="2"
-          opacity="0.3"
-        />
-        <%!-- Nodes --%>
-        <rect
-          :for={node <- @nodes}
-          x={node.position.x - 30}
-          y={node.position.y - 15}
-          width="60"
-          height="30"
-          rx="4"
-          fill={minimap_color(node)}
-          opacity="0.7"
-        />
-      </svg>
-    </div>
-    """
-  end
 
   attr :node, :map, required: true
   attr :selected, :boolean, default: false

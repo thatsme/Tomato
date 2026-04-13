@@ -346,9 +346,6 @@ defmodule TomatoWeb.GraphLive do
             position={@graph.oodn_position || %{x: 600, y: 80}}
           />
         </svg>
-
-        <%!-- Minimap --%>
-        <.minimap subgraph={@subgraph} />
       </div>
 
       <%!-- Content Editor Modal --%>

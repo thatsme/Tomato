@@ -54,7 +54,7 @@ Currently 27 handlers + 6 SVG components + 6 modal components in one file (~1600
 lib/tomato_web/live/
   graph_live.ex                 # Mount, render, event routing only
   graph_live/
-    canvas_components.ex        # graph_node, edge_line, oodn_node, minimap (SVG)
+    canvas_components.ex        # graph_node, edge_line, oodn_node (SVG)
     sidebar_components.ex       # node_list, properties_panel, search
     modal_components.ex         # content_editor, oodn_editor, template_picker,
                                 #   generated_output, graph_manager

@@ -58,7 +58,7 @@ v0.3 is an internal-quality release — refactoring, bug fixes, and small correc
 | **Seeder fix** | Demo graphs seed independently. If any of `default.json`, `multi-machine.json`, `home-manager.json` is missing on startup, the seeder creates just that one — previously a populated `default.json` blocked all seeding. |
 | **Leaf `target` field** | Each leaf declares `target :: :nixos \| :home_manager \| :all` (default `:nixos`). The walker filters shared root-level fragments by each machine's type, so `networking.firewall.*` is never spliced into a Home Manager module. |
 | **Per-machine OODN overlay** | Each machine gateway carries an optional `oodn_overrides` map that shadows the global OODN registry inside that machine's subtree. Two machines can now hold different `nginx_port` values without naming hacks. |
-| **Canvas components split** | SVG render components (`graph_node`, `edge_line`, `oodn_node`, `minimap`) and their style helpers moved from `TomatoWeb.GraphLive` into `TomatoWeb.GraphLive.CanvasComponents`. First phase of the LiveView god-module refactor. |
+| **Canvas components split** | SVG render components (`graph_node`, `edge_line`, `oodn_node`) and their style helpers moved from `TomatoWeb.GraphLive` into `TomatoWeb.GraphLive.CanvasComponents`. First phase of the LiveView god-module refactor. |
 | **Test coverage** | 69 tests → 114 tests (+45) across walker target filtering, mutations, persistence roundtrips, deploy config resolution, and OODN overlay scenarios. |
 
 > ⚠️ **UI gap — `target` and `oodn_overrides` are data-layer only in v0.3.** Both features work end-to-end in the walker, persist to JSON correctly, and have full test coverage, but there's no visual editor yet. New leaves default to `target: :nixos` and new machines default to `oodn_overrides: %{}`, which is correct for every existing graph — but if you need to mark a leaf as `:home_manager` or attach per-machine overrides, you currently have to edit `priv/graphs/*.json` by hand or use `iex -S mix phx.server` (see the [OODN Variables](#oodn-variables) section for an example). **Sidebar editors for both are queued as the next v0.3 PR.**
@@ -74,7 +74,6 @@ v0.3 is an internal-quality release — refactoring, bug fixes, and small correc
 | **Content preview** | Leaf nodes show the first lines of their Nix content directly on the canvas |
 | **Node search** | Find nodes by name or content across all subgraphs and floors |
 | **Undo / Redo** | 50-snapshot mutation history with sidebar buttons |
-| **Minimap** | Bottom-right overview of the current subgraph |
 
 ## How It Works
 
@@ -243,7 +242,7 @@ Either way, the walker picks them up on the next Generate. Leaves inside the mac
 
 Context menu actions: Connect from/to, Duplicate, Rename, Disconnect all, Delete, Reverse edge, Fit to view, Reset zoom.
 
-The sidebar provides node search, undo/redo, graph manager, backend toggle, generate, and node properties. The minimap (bottom-right of the canvas) shows the current subgraph at reduced scale.
+The sidebar provides node search, undo/redo, graph manager, backend toggle, generate, and node properties.
 
 ## Deploy Configuration
 
@@ -311,7 +310,7 @@ lib/tomato_web/
   live/
     graph_live.ex              # Main LiveView — mount, render, event routing, modals
     graph_live/
-      canvas_components.ex     # SVG function components — graph_node, edge_line, oodn_node, minimap
+      canvas_components.ex     # SVG function components — graph_node, edge_line, oodn_node
                                #   + style helpers (node_color, node_rect_class, has_content?, ...)
 
 assets/js/
