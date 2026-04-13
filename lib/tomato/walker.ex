@@ -14,9 +14,15 @@ defmodule Tomato.Walker do
   is never spliced into a Home Manager machine's config.
   """
 
-  alias Tomato.{Constraint, Graph, Node, Subgraph}
+  alias Tomato.{Constraint, Graph, Node, NixValidator, Subgraph}
 
   @type tagged_fragment :: {Node.target(), String.t()}
+
+  @type validation_error :: %{
+          node_id: String.t(),
+          node_name: String.t(),
+          reason: String.t()
+        }
 
   @doc """
   Walk the entire graph starting from the root subgraph.
@@ -199,6 +205,116 @@ defmodule Tomato.Walker do
       Map.get(oodn, key, "${#{key}}")
     end)
   end
+
+  @doc """
+  Validate every leaf fragment in the graph via `Tomato.NixValidator`.
+
+  Runs a parallel traversal (not a wrapper of `walk/1`) so per-leaf
+  errors can be attributed to their originating node. Each leaf is
+  interpolated with the OODN it would see in `walk/1` (global OODN
+  for shared root leaves, machine OODN for leaves inside machine
+  gateways) before validation.
+
+  Return values:
+
+    * `:ok` — every leaf parses cleanly
+    * `:disabled` — validation turned off via
+      `config :tomato, :nix_validation, enabled: false`
+    * `:unavailable` — `nix-instantiate` not on PATH
+    * `{:error, errors}` — list of `%{node_id, node_name, reason}`
+      maps, one per offending leaf
+
+  `walk/1` is intentionally untouched so the generated output and
+  its return contract stay byte-identical regardless of validation.
+  """
+  @spec validate(Graph.t()) :: :ok | :disabled | :unavailable | {:error, [validation_error()]}
+  def validate(%Graph{} = graph) do
+    cond do
+      not validation_enabled?() -> :disabled
+      not NixValidator.available?() -> :unavailable
+      true -> do_validate(graph)
+    end
+  end
+
+  @spec validation_enabled?() :: boolean()
+  defp validation_enabled? do
+    :tomato
+    |> Application.get_env(:nix_validation, [])
+    |> Keyword.get(:enabled, true)
+  end
+
+  @spec do_validate(Graph.t()) :: :ok | {:error, [validation_error()]}
+  defp do_validate(%Graph{} = graph) do
+    oodn = build_oodn_map(graph)
+    root = Graph.root_subgraph(graph)
+
+    errors =
+      root
+      |> collect_leaf_fragments_with_ids(graph, oodn)
+      |> Enum.flat_map(fn {id, name, fragment} ->
+        case NixValidator.validate_fragment(fragment) do
+          :ok -> []
+          {:error, reason} -> [%{node_id: id, node_name: name, reason: reason}]
+        end
+      end)
+
+    case errors do
+      [] -> :ok
+      errs -> {:error, errs}
+    end
+  end
+
+  @spec collect_leaf_fragments_with_ids(Subgraph.t(), Graph.t(), map()) ::
+          [{String.t(), String.t(), String.t()}]
+  defp collect_leaf_fragments_with_ids(%Subgraph{} = sg, %Graph{} = graph, oodn) do
+    case Constraint.topological_sort(sg) do
+      {:ok, sorted_ids} ->
+        Enum.flat_map(sorted_ids, fn node_id ->
+          node = Map.get(sg.nodes, node_id)
+          collect_leaf_with_id(node, graph, oodn)
+        end)
+
+      {:error, _, _} ->
+        []
+    end
+  end
+
+  defp collect_leaf_with_id(
+         %{type: :leaf, id: id, name: name, content: content},
+         _graph,
+         oodn
+       )
+       when is_binary(content) and content != "" do
+    [{id, name, interpolate(String.trim(content), oodn)}]
+  end
+
+  defp collect_leaf_with_id(
+         %{type: :gateway, subgraph_id: sg_id, machine: machine},
+         graph,
+         oodn
+       )
+       when is_binary(sg_id) and is_map(machine) do
+    machine_oodn = build_machine_oodn(oodn, machine)
+
+    case Graph.get_subgraph(graph, sg_id) do
+      nil -> []
+      child_sg -> collect_leaf_fragments_with_ids(child_sg, graph, machine_oodn)
+    end
+  end
+
+  defp collect_leaf_with_id(
+         %{type: :gateway, subgraph_id: sg_id},
+         graph,
+         oodn
+       )
+       when is_binary(sg_id) do
+    case Graph.get_subgraph(graph, sg_id) do
+      nil -> []
+      child_sg -> collect_leaf_fragments_with_ids(child_sg, graph, oodn)
+    end
+  end
+
+  defp collect_leaf_with_id(_node, _graph, _oodn), do: []
 
   @doc """
   Wrap fragments in a NixOS module skeleton.
