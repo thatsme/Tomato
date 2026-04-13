@@ -9,6 +9,7 @@ defmodule TomatoWeb.GraphLive do
   alias Tomato.{Store, Graph}
 
   alias TomatoWeb.GraphLive.{
+    DeployHandlers,
     EdgeHandlers,
     MachineHandlers,
     NavigationHandlers,
@@ -57,40 +58,13 @@ defmodule TomatoWeb.GraphLive do
   defp store(socket), do: socket.assigns.store
 
   @impl true
-  def handle_info({:deploy_result, {:ok, output}}, socket) do
-    {:noreply,
-     socket
-     |> assign(:deploy_status, "success")
-     |> assign(:deploy_output, output)}
-  end
+  # Deploy/diff result dispatch — body lives in DeployHandlers, the tuple
+  # envelope is unwrapped here and the bare-socket return is re-wrapped.
+  def handle_info({:deploy_result, result}, socket),
+    do: {:noreply, DeployHandlers.handle_deploy_result(result, socket)}
 
-  def handle_info({:deploy_result, {:error, reason}}, socket) do
-    {:noreply,
-     socket
-     |> assign(:deploy_status, "error")
-     |> assign(:deploy_output, reason)}
-  end
-
-  def handle_info({:diff_result, {:ok, ""}}, socket) do
-    {:noreply,
-     socket
-     |> assign(:deploy_status, "success")
-     |> assign(:deploy_output, "No changes — local config matches the machine.")}
-  end
-
-  def handle_info({:diff_result, {:ok, diff}}, socket) do
-    {:noreply,
-     socket
-     |> assign(:deploy_status, "success")
-     |> assign(:deploy_output, "=== Diff (current vs new) ===\n\n" <> diff)}
-  end
-
-  def handle_info({:diff_result, {:error, reason}}, socket) do
-    {:noreply,
-     socket
-     |> assign(:deploy_status, "error")
-     |> assign(:deploy_output, "Diff failed: " <> reason)}
-  end
+  def handle_info({:diff_result, result}, socket),
+    do: {:noreply, DeployHandlers.handle_diff_result(result, socket)}
 
   def handle_info({:graph_updated, graph}, socket) do
     subgraph = Graph.get_subgraph(graph, socket.assigns.subgraph.id)
@@ -275,116 +249,25 @@ defmodule TomatoWeb.GraphLive do
     {:noreply, socket}
   end
 
-  # --- Generate ---
+  # --- Deploy pipeline ---
 
-  def handle_event("generate", _params, socket) do
-    graph = socket.assigns.graph
-    output = Tomato.Walker.walk(graph)
+  def handle_event("generate", params, socket),
+    do: DeployHandlers.generate(params, socket)
 
-    # Write .nix file to disk
-    generated_dir = Path.expand("priv/generated", File.cwd!())
-    File.mkdir_p!(generated_dir)
+  def handle_event("close_generated", params, socket),
+    do: DeployHandlers.close_generated(params, socket)
 
-    filename =
-      case graph.backend do
-        :flake -> "flake.nix"
-        _ -> Tomato.Store.slugify(graph.name) <> ".nix"
-      end
+  def handle_event("reconfigure", params, socket),
+    do: DeployHandlers.reconfigure(params, socket)
 
-    nix_path = Path.join(generated_dir, filename)
-    File.write!(nix_path, output)
+  def handle_event("show_diff", params, socket),
+    do: DeployHandlers.show_diff(params, socket)
 
-    {:noreply,
-     socket
-     |> assign(:generated_output, output)
-     |> assign(:generated_path, nix_path)
-     |> assign(:show_generated, true)}
-  end
+  def handle_event("rollback", params, socket),
+    do: DeployHandlers.rollback(params, socket)
 
-  def handle_event("close_generated", _params, socket) do
-    {:noreply,
-     socket
-     |> assign(:show_generated, false)
-     |> assign(:deploy_status, nil)
-     |> assign(:deploy_output, "")}
-  end
-
-  def handle_event("reconfigure", params, socket) do
-    nix_path = socket.assigns.generated_path
-    mode = parse_deploy_mode(params["mode"])
-
-    if nix_path && File.exists?(nix_path) do
-      pid = self()
-
-      Task.Supervisor.start_child(Tomato.TaskSupervisor, fn ->
-        result = Tomato.Deploy.deploy(nix_path, %{mode: mode})
-        send(pid, {:deploy_result, result})
-      end)
-
-      {:noreply,
-       socket
-       |> assign(:deploy_status, "running")
-       |> assign(:deploy_output, "Running nixos-rebuild #{mode}...")}
-    else
-      {:noreply,
-       socket
-       |> assign(:deploy_status, "error")
-       |> assign(:deploy_output, "No .nix file generated yet. Click Generate first.")}
-    end
-  end
-
-  def handle_event("show_diff", _params, socket) do
-    nix_path = socket.assigns.generated_path
-
-    if nix_path && File.exists?(nix_path) do
-      pid = self()
-
-      Task.Supervisor.start_child(Tomato.TaskSupervisor, fn ->
-        result = Tomato.Deploy.diff(nix_path)
-        send(pid, {:diff_result, result})
-      end)
-
-      {:noreply,
-       socket
-       |> assign(:deploy_status, "running")
-       |> assign(:deploy_output, "Fetching current config from machine...")}
-    else
-      {:noreply, socket}
-    end
-  end
-
-  def handle_event("rollback", _params, socket) do
-    pid = self()
-
-    Task.Supervisor.start_child(Tomato.TaskSupervisor, fn ->
-      result = Tomato.Deploy.rollback()
-      send(pid, {:deploy_result, result})
-    end)
-
-    {:noreply,
-     socket
-     |> assign(:deploy_status, "running")
-     |> assign(:deploy_output, "Rolling back to previous generation...")}
-  end
-
-  def handle_event("test_connection", _params, socket) do
-    pid = self()
-
-    Task.Supervisor.start_child(Tomato.TaskSupervisor, fn ->
-      result = Tomato.Deploy.test_connection()
-      send(pid, {:deploy_result, result})
-    end)
-
-    {:noreply,
-     socket
-     |> assign(:deploy_status, "running")
-     |> assign(:deploy_output, "Testing SSH connection...")}
-  end
-
-  defp parse_deploy_mode("test"), do: :test
-  defp parse_deploy_mode("dry_activate"), do: :dry_activate
-  defp parse_deploy_mode("build"), do: :build
-  defp parse_deploy_mode(_), do: :switch
+  def handle_event("test_connection", params, socket),
+    do: DeployHandlers.test_connection(params, socket)
 
   # --- Graph management ---
 
