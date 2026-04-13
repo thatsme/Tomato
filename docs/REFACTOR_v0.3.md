@@ -4,12 +4,27 @@
 
 | Section | Status |
 |---|---|
-| §1 GraphLive split | In progress — canvas / modals / sidebar extracted; event handler split pending |
+| §1 GraphLive split | **Done** — canvas / modals / sidebar components + 8 handler modules all extracted |
 | §2 Store split | Done (`4f069d6`) |
 | §3 Deploy split + SSH key auth | Done (`27fd2f7`) |
-| §4 Local Nix-fragment validation | Pending |
+| §4 Local Nix-fragment validation | **Pending — only remaining v0.3 item** |
 
-`lib/tomato_web/live/graph_live.ex` is now ~905 lines (from ~1600 at the start of v0.3). The remaining bulk is ~50 `handle_event` clauses and a handful of helpers — the target of the handler split.
+`lib/tomato_web/live/graph_live.ex` is now **387 lines** (from ~1600 at the start of v0.3). Contains only `mount`, `render`, the `handle_event` dispatch table, two `handle_info` clauses, and the `stop_propagation` canvas plumbing stub.
+
+**Handler modules under `lib/tomato_web/live/graph_live/`:**
+
+| Module | Clauses | Role |
+|---|---|---|
+| `node_handlers.ex` | 14 | node CRUD, selection, content editor |
+| `edge_handlers.ex` | 6 | edge mutation + connection-mode lifecycle |
+| `navigation_handlers.ex` | 4 + 4 helpers | enter/breadcrumb/search/goto |
+| `machine_handlers.ex` | 1 | `update_machine` |
+| `oodn_handlers.ex` | 6 | OODN registry |
+| `deploy_handlers.ex` | 6 + 2 `handle_info` | deploy pipeline |
+| `graph_state_handlers.ex` | 9 | backend toggle + history + file lifecycle |
+| `template_handlers.ex` | 3 | template picker + add |
+
+**Giulia post-refactor**: GraphLive god-module score dropped from 198 → 116 (#1 → #2), named function count 10 → 4. Spec ratio improved ~49% → ~58% from handler specs. 132 tests, 0 failures.
 
 ## Why
 
@@ -27,7 +42,7 @@ These need splitting before they become unmanageable.
 
 ## 1. Split `TomatoWeb.GraphLive`
 
-**Status:** canvas components done (`c81d879`), modal components done (`22809c0`), sidebar components done (`f96e643`), event handler split pending.
+**Status:** done. Canvas (`c81d879`), modals (`22809c0`), sidebar (`f96e643`), and all 8 handler modules (`232c1bc` → `79ccc2b`) extracted. `graph_live.ex` is 387 lines.
 
 Currently 27 handlers + 6 SVG components + 6 modal components in one file (~1600 lines).
 
@@ -156,10 +171,10 @@ Today the walker treats leaf content as opaque strings (`walker.ex:118`) — a s
 
 ## 5. Refactor Order
 
-1. ~~**Deploy + SSH key auth** first — smallest split, no UI changes, unblocks the README's security promise~~ ✓
-2. ~~**Store** next — affects mutations but pure functions are easier to test~~ ✓
-3. **GraphLive** last — biggest change, depends on having stable Store API. Canvas ✓, modals ✓, sidebar ✓; event handler split is the remaining phase.
-4. **Nix-fragment validator** — independent, slot in alongside any of the above (not yet started).
+1. ~~**Deploy + SSH key auth** first~~ ✓
+2. ~~**Store** next~~ ✓
+3. ~~**GraphLive** last — biggest change~~ ✓ (canvas, modals, sidebar, 8 handler modules)
+4. **Nix-fragment validator** — the only remaining v0.3 item. Next session.
 
 ---
 
