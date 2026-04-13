@@ -1,4 +1,18 @@
 defmodule TomatoWeb.GraphLiveTest do
+  @moduledoc """
+  Structural smoke tests for the graph editor LiveView.
+
+  ## Coverage gap
+
+  The `generated_output` modal's validation panel (introduced with
+  `Walker.validate/1` wiring in §4) has no render-path coverage here.
+  The four states (`:ok` / `:disabled` / `:unavailable` / `{:error, _}`)
+  are exercised only via `Tomato.Walker.validate/1` unit tests in
+  `test/tomato/walker_test.exs`, which verify the return contract but
+  not the rendered HTML. If the modal markup or the JS.push chain on
+  error rows starts misbehaving, these tests will not catch it. Add
+  coverage when the modal grows further behaviour.
+  """
   use TomatoWeb.ConnCase, async: true
 
   import Phoenix.LiveViewTest

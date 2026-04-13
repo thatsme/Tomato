@@ -4,10 +4,12 @@
 
 | Section | Status |
 |---|---|
-| §1 GraphLive split | **Done** — canvas / modals / sidebar components + 8 handler modules all extracted |
+| §1 GraphLive split | Done — canvas / modals / sidebar components + 8 handler modules all extracted |
 | §2 Store split | Done (`4f069d6`) |
 | §3 Deploy split + SSH key auth | Done (`27fd2f7`) |
-| §4 Local Nix-fragment validation | **Pending — only remaining v0.3 item** |
+| §4 Local Nix-fragment validation | Done (`a9cd61f` validator + `13c8dad` walker + `717b159` LiveView wiring) |
+
+**v0.3 is feature-complete.** Branch ready for merge as `v0.3.0`.
 
 `lib/tomato_web/live/graph_live.ex` is now **387 lines** (from ~1600 at the start of v0.3). Contains only `mount`, `render`, the `handle_event` dispatch table, two `handle_info` clauses, and the `stop_propagation` canvas plumbing stub.
 
@@ -153,17 +155,21 @@ lib/tomato/deploy/
 
 ## 4. Local Nix-fragment validation
 
-**Status:** pending.
+**Status:** done.
 
-Today the walker treats leaf content as opaque strings (`walker.ex:118`) — a syntax error in a fragment passes through generation, gets uploaded via SFTP, and only fails at `nixos-rebuild` time on the remote machine. Painful feedback loop.
+Three commits on `v0.3`:
 
-### Approach
+1. `a9cd61f` — `Tomato.NixValidator` wraps `nix-instantiate --parse` against a `{ config, pkgs, lib, ... }: { ... }` harness so attribute-set bodies parse correctly. Stderr is cleaned (temp path redacted). `available?/0` checks PATH.
+2. `13c8dad` — `Tomato.Walker.validate/1` runs a parallel traversal of the graph (not a wrapper of `walk/1`) so per-leaf errors carry `node_id` and `node_name`. Returns `:ok | :disabled | :unavailable | {:error, [%{node_id, node_name, reason}]}`. Each leaf is interpolated with the OODN it would see in `walk/1` (machine OODN inside gateways, global OODN at root) before validation. `walk/1` is intentionally untouched — generated output stays byte-identical.
+3. `717b159` — LiveView wiring: `DeployHandlers.generate/2` calls `Walker.validate/1` after `walk/1` and assigns `:validation_result`; `ModalComponents.generated_output/1` renders a `validation_panel` with one clause head per state. Error rows chain `JS.push("select_node") |> JS.push("close_generated")` so clicking lands on the offending node.
 
-1. New module `Tomato.NixValidator` — wraps `nix-instantiate --parse` (or `nix eval --expr` if `nix-command` is the only available CLI).
-2. Walker calls `NixValidator.check_fragment/2` for each leaf as it's collected; failures are accumulated rather than raised, so all errors surface at once.
-3. Generate flow returns `{:ok, output}` or `{:error, [%{node_id, line, message}, ...]}`; the LiveView surfaces them in the generated-output modal with the offending node highlighted.
-4. **Graceful fallback** — if no `nix` binary is on PATH, log once and skip validation (don't break dev environments without Nix installed locally).
-5. Validation is opt-in via config (`config :tomato, :validate_fragments, true`), default on.
+Errors are non-blocking — Deploy/Switch buttons stay enabled because the local Nix may differ from the target machine's Nix.
+
+`test_helper.exs` auto-excludes the `:nix_cli` tag when `nix-instantiate` isn't on PATH, so the suite stays green on Windows dev boxes without Nix.
+
+### Known limitation
+
+If the offending leaf lives inside a machine gateway, the `select_node` push selects a node not in the current canvas (the user is viewing the root subgraph). `NodeHandlers.select/2` only sets `selected_node_id`; it does not navigate into the parent subgraph. **Follow-up needed**: a `navigate_to_node` handler that walks the breadcrumb to enter the right gateway before selecting. Non-trivial — needs its own session.
 
 **Why a separate section, not part of a god-module split:** this is new behaviour, lives in `walker.ex` + a new module, and is independent of the three refactors. Slot it in whenever the Deploy or Store work has a quiet moment.
 
