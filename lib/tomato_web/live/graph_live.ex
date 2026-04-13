@@ -14,12 +14,13 @@ defmodule TomatoWeb.GraphLive do
       Phoenix.PubSub.subscribe(Tomato.PubSub, Store.topic(store))
     end
 
-    graph = Store.get_graph()
+    graph = Store.get_graph(store)
     root_id = graph.root_subgraph_id
     subgraph = Graph.get_subgraph(graph, root_id)
 
     {:ok,
      socket
+     |> assign(:store, store)
      |> assign(:graph, graph)
      |> assign(:subgraph, subgraph)
      |> assign(:breadcrumb, [{root_id, subgraph.name}])
@@ -31,7 +32,7 @@ defmodule TomatoWeb.GraphLive do
      |> assign(:show_template_picker, false)
      |> assign(:search_query, "")
      |> assign(:search_results, [])
-     |> assign(:history_status, Store.history_status())
+     |> assign(:history_status, Store.history_status(store))
      |> assign(:show_generated, false)
      |> assign(:generated_output, "")
      |> assign(:generated_path, nil)
@@ -39,9 +40,11 @@ defmodule TomatoWeb.GraphLive do
      |> assign(:deploy_output, "")
      |> assign(:show_graph_manager, false)
      |> assign(:graph_list, [])
-     |> assign(:current_file, Store.current_file())
+     |> assign(:current_file, Store.current_file(store))
      |> assign(:page_title, "Graph Editor")}
   end
+
+  defp store(socket), do: socket.assigns.store
 
   @impl true
   def handle_info({:deploy_result, {:ok, output}}, socket) do
@@ -86,7 +89,7 @@ defmodule TomatoWeb.GraphLive do
      socket
      |> assign(:graph, graph)
      |> assign(:subgraph, subgraph || socket.assigns.subgraph)
-     |> assign(:history_status, Store.history_status())}
+     |> assign(:history_status, Store.history_status(store(socket)))}
   end
 
   # --- Events ---
@@ -112,13 +115,13 @@ defmodule TomatoWeb.GraphLive do
         :gateway ->
           # Create gateway with pre-populated child nodes
           {:ok, gw, child} =
-            Store.add_gateway(sg.id,
+            Store.add_gateway(store(socket), sg.id,
               name: template.name,
               position: %{x: 300, y: y}
             )
 
           children = Map.get(template, :children, [])
-          child_sg = Store.get_subgraph(child.id)
+          child_sg = Store.get_subgraph(store(socket), child.id)
           child_input = Tomato.Subgraph.input_node(child_sg)
           child_output = Tomato.Subgraph.output_node(child_sg)
 
@@ -127,15 +130,15 @@ defmodule TomatoWeb.GraphLive do
           |> Enum.with_index()
           |> Enum.each(fn {child_tmpl, idx} ->
             {:ok, leaf} =
-              Store.add_node(child.id,
+              Store.add_node(store(socket), child.id,
                 type: :leaf,
                 name: child_tmpl.name,
                 content: String.trim(child_tmpl.content),
                 position: %{x: 150 + idx * 180, y: 200}
               )
 
-            Store.add_edge(child.id, child_input.id, leaf.id)
-            Store.add_edge(child.id, leaf.id, child_output.id)
+            Store.add_edge(store(socket), child.id, child_input.id, leaf.id)
+            Store.add_edge(store(socket), child.id, leaf.id, child_output.id)
           end)
 
           {:noreply,
@@ -146,7 +149,7 @@ defmodule TomatoWeb.GraphLive do
         _ ->
           # Simple leaf node
           {:ok, node} =
-            Store.add_node(sg.id,
+            Store.add_node(store(socket), sg.id,
               type: :leaf,
               name: template.name,
               content: String.trim(template.content),
@@ -169,7 +172,7 @@ defmodule TomatoWeb.GraphLive do
     y = 100 + node_count * 80
 
     {:ok, _node} =
-      Store.add_node(sg.id,
+      Store.add_node(store(socket), sg.id,
         type: :leaf,
         name: "Node #{node_count - 1}",
         position: %{x: 300, y: y}
@@ -184,7 +187,7 @@ defmodule TomatoWeb.GraphLive do
     y = 100 + node_count * 80
 
     {:ok, _machine, _child} =
-      Store.add_machine(sg.id,
+      Store.add_machine(store(socket), sg.id,
         hostname: "machine-#{node_count}",
         system: "aarch64-linux",
         state_version: "24.11",
@@ -200,7 +203,10 @@ defmodule TomatoWeb.GraphLive do
     y = 100 + node_count * 80
 
     {:ok, _gateway, _child_sg} =
-      Store.add_gateway(sg.id, name: "Gateway #{node_count - 1}", position: %{x: 300, y: y})
+      Store.add_gateway(store(socket), sg.id,
+        name: "Gateway #{node_count - 1}",
+        position: %{x: 300, y: y}
+      )
 
     {:noreply, socket}
   end
@@ -212,7 +218,7 @@ defmodule TomatoWeb.GraphLive do
     case type do
       "leaf" ->
         {:ok, _node} =
-          Store.add_node(sg.id,
+          Store.add_node(store(socket), sg.id,
             type: :leaf,
             name: "Node #{node_count - 1}",
             position: %{x: x, y: y}
@@ -222,7 +228,10 @@ defmodule TomatoWeb.GraphLive do
 
       "gateway" ->
         {:ok, _gw, _child} =
-          Store.add_gateway(sg.id, name: "Gateway #{node_count - 1}", position: %{x: x, y: y})
+          Store.add_gateway(store(socket), sg.id,
+            name: "Gateway #{node_count - 1}",
+            position: %{x: x, y: y}
+          )
 
         {:noreply, socket}
 
@@ -237,7 +246,7 @@ defmodule TomatoWeb.GraphLive do
         from_id = socket.assigns.connecting_from
 
         if from_id != node_id do
-          Store.add_edge(socket.assigns.subgraph.id, from_id, node_id)
+          Store.add_edge(store(socket), socket.assigns.subgraph.id, from_id, node_id)
         end
 
         {:noreply, assign(socket, :connecting_from, nil)}
@@ -246,7 +255,7 @@ defmodule TomatoWeb.GraphLive do
         to_id = socket.assigns.connecting_to
 
         if to_id != node_id do
-          Store.add_edge(socket.assigns.subgraph.id, node_id, to_id)
+          Store.add_edge(store(socket), socket.assigns.subgraph.id, node_id, to_id)
         end
 
         {:noreply, assign(socket, :connecting_to, nil)}
@@ -265,7 +274,7 @@ defmodule TomatoWeb.GraphLive do
   end
 
   def handle_event("delete_node", %{"node-id" => node_id}, socket) do
-    Store.remove_node(socket.assigns.subgraph.id, node_id)
+    Store.remove_node(store(socket), socket.assigns.subgraph.id, node_id)
 
     {:noreply,
      socket
@@ -274,7 +283,7 @@ defmodule TomatoWeb.GraphLive do
   end
 
   def handle_event("delete_edge", %{"edge-id" => edge_id}, socket) do
-    Store.remove_edge(socket.assigns.subgraph.id, edge_id)
+    Store.remove_edge(store(socket), socket.assigns.subgraph.id, edge_id)
     {:noreply, socket}
   end
 
@@ -330,12 +339,12 @@ defmodule TomatoWeb.GraphLive do
   end
 
   def handle_event("node_moved", %{"node_id" => node_id, "x" => x, "y" => y}, socket) do
-    Store.update_node(socket.assigns.subgraph.id, node_id, position: %{x: x, y: y})
+    Store.update_node(store(socket), socket.assigns.subgraph.id, node_id, position: %{x: x, y: y})
     {:noreply, socket}
   end
 
   def handle_event("rename_node", %{"node-id" => node_id, "name" => name}, socket) do
-    Store.update_node(socket.assigns.subgraph.id, node_id, name: name)
+    Store.update_node(store(socket), socket.assigns.subgraph.id, node_id, name: name)
     {:noreply, socket}
   end
 
@@ -349,7 +358,7 @@ defmodule TomatoWeb.GraphLive do
   end
 
   def handle_event("save_content", %{"node-id" => node_id, "content" => content}, socket) do
-    Store.update_node(socket.assigns.subgraph.id, node_id, content: content)
+    Store.update_node(store(socket), socket.assigns.subgraph.id, node_id, content: content)
     {:noreply, assign(socket, :editing_content_node_id, nil)}
   end
 
@@ -372,7 +381,7 @@ defmodule TomatoWeb.GraphLive do
       username: params["username"] || "user"
     }
 
-    Store.update_node(socket.assigns.subgraph.id, node_id,
+    Store.update_node(store(socket), socket.assigns.subgraph.id, node_id,
       machine: machine,
       name: params["hostname"]
     )
@@ -383,12 +392,12 @@ defmodule TomatoWeb.GraphLive do
   # --- Undo / Redo ---
 
   def handle_event("undo", _params, socket) do
-    Store.undo()
+    Store.undo(store(socket))
     {:noreply, socket}
   end
 
   def handle_event("redo", _params, socket) do
-    Store.redo()
+    Store.redo(store(socket))
     {:noreply, socket}
   end
 
@@ -484,7 +493,7 @@ defmodule TomatoWeb.GraphLive do
 
   def handle_event("toggle_backend", _params, socket) do
     new_backend = if socket.assigns.graph.backend == :flake, do: :traditional, else: :flake
-    Store.set_backend(new_backend)
+    Store.set_backend(store(socket), new_backend)
     {:noreply, socket}
   end
 
@@ -602,7 +611,7 @@ defmodule TomatoWeb.GraphLive do
   # --- Graph management ---
 
   def handle_event("open_graph_manager", _params, socket) do
-    graph_list = Store.list_graphs()
+    graph_list = Store.list_graphs(store(socket))
 
     {:noreply,
      socket
@@ -615,7 +624,7 @@ defmodule TomatoWeb.GraphLive do
   end
 
   def handle_event("load_graph_file", %{"filename" => filename}, socket) do
-    case Store.load_graph(filename) do
+    case Store.load_graph(store(socket), filename) do
       {:ok, graph} ->
         root = Graph.root_subgraph(graph)
 
@@ -634,7 +643,7 @@ defmodule TomatoWeb.GraphLive do
   end
 
   def handle_event("new_graph_submit", %{"name" => name}, socket) when name != "" do
-    {:ok, graph, filename} = Store.new_graph(name)
+    {:ok, graph, filename} = Store.new_graph(store(socket), name)
     root = Graph.root_subgraph(graph)
 
     {:noreply,
@@ -652,7 +661,7 @@ defmodule TomatoWeb.GraphLive do
   end
 
   def handle_event("save_as_submit", %{"name" => name}, socket) when name != "" do
-    {:ok, filename} = Store.save_as(name)
+    {:ok, filename} = Store.save_as(store(socket), name)
 
     {:noreply,
      socket
@@ -666,8 +675,8 @@ defmodule TomatoWeb.GraphLive do
   end
 
   def handle_event("delete_graph_file", %{"filename" => filename}, socket) do
-    Store.delete_graph(filename)
-    graph_list = Store.list_graphs()
+    Store.delete_graph(store(socket), filename)
+    graph_list = Store.list_graphs(store(socket))
     {:noreply, assign(socket, :graph_list, graph_list)}
   end
 
@@ -682,22 +691,22 @@ defmodule TomatoWeb.GraphLive do
   end
 
   def handle_event("add_oodn", %{"key" => key, "value" => value}, socket) do
-    Store.put_oodn(key, value)
+    Store.put_oodn(store(socket), key, value)
     {:noreply, socket}
   end
 
   def handle_event("update_oodn", %{"oodn-id" => oodn_id, "value" => value}, socket) do
-    Store.update_oodn(oodn_id, value)
+    Store.update_oodn(store(socket), oodn_id, value)
     {:noreply, socket}
   end
 
   def handle_event("remove_oodn", %{"oodn-id" => oodn_id}, socket) do
-    Store.remove_oodn(oodn_id)
+    Store.remove_oodn(store(socket), oodn_id)
     {:noreply, socket}
   end
 
   def handle_event("oodn_moved", %{"x" => x, "y" => y}, socket) do
-    Store.move_oodn(%{x: x, y: y})
+    Store.move_oodn(store(socket), %{x: x, y: y})
     {:noreply, socket}
   end
 
@@ -713,7 +722,7 @@ defmodule TomatoWeb.GraphLive do
 
     if node do
       {:ok, _new_node} =
-        Store.add_node(sg.id,
+        Store.add_node(store(socket), sg.id,
           type: node.type,
           name: node.name <> " (copy)",
           content: node.content,
@@ -730,7 +739,7 @@ defmodule TomatoWeb.GraphLive do
     sg.edges
     |> Enum.filter(fn {_id, edge} -> edge.from == node_id or edge.to == node_id end)
     |> Enum.each(fn {edge_id, _edge} ->
-      Store.remove_edge(sg.id, edge_id)
+      Store.remove_edge(store(socket), sg.id, edge_id)
     end)
 
     {:noreply, socket}
@@ -744,8 +753,8 @@ defmodule TomatoWeb.GraphLive do
         {:noreply, socket}
 
       edge ->
-        Store.remove_edge(sg.id, edge_id)
-        Store.add_edge(sg.id, edge.to, edge.from)
+        Store.remove_edge(store(socket), sg.id, edge_id)
+        Store.add_edge(store(socket), sg.id, edge.to, edge.from)
         {:noreply, socket}
     end
   end
