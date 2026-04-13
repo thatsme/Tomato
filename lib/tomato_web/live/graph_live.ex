@@ -11,10 +11,12 @@ defmodule TomatoWeb.GraphLive do
   alias TomatoWeb.GraphLive.{
     DeployHandlers,
     EdgeHandlers,
+    GraphStateHandlers,
     MachineHandlers,
     NavigationHandlers,
     NodeHandlers,
-    OodnHandlers
+    OodnHandlers,
+    TemplateHandlers
   }
 
   @impl true
@@ -55,8 +57,6 @@ defmodule TomatoWeb.GraphLive do
      |> assign(:page_title, "Graph Editor")}
   end
 
-  defp store(socket), do: socket.assigns.store
-
   @impl true
   # Deploy/diff result dispatch — body lives in DeployHandlers, the tuple
   # envelope is unwrapped here and the bare-socket return is re-wrapped.
@@ -73,101 +73,26 @@ defmodule TomatoWeb.GraphLive do
      socket
      |> assign(:graph, graph)
      |> assign(:subgraph, subgraph || socket.assigns.subgraph)
-     |> assign(:history_status, Store.history_status(store(socket)))}
+     |> assign(:history_status, Store.history_status(socket.assigns.store))}
   end
 
   # --- Events ---
 
   @impl true
-  def handle_event("show_template_picker", _params, socket) do
-    {:noreply, assign(socket, :show_template_picker, true)}
-  end
+  def handle_event("show_template_picker", params, socket),
+    do: TemplateHandlers.open(params, socket)
 
-  def handle_event("close_template_picker", _params, socket) do
-    {:noreply, assign(socket, :show_template_picker, false)}
-  end
+  def handle_event("close_template_picker", params, socket),
+    do: TemplateHandlers.close(params, socket)
 
-  def handle_event("add_from_template", %{"template-id" => template_id}, socket) do
-    sg = socket.assigns.subgraph
-    node_count = map_size(sg.nodes)
-    y = 100 + node_count * 80
-
-    template = Tomato.TemplateLibrary.get(template_id)
-
-    if template do
-      case Map.get(template, :type, :leaf) do
-        :gateway ->
-          # Create gateway with pre-populated child nodes
-          {:ok, gw, child} =
-            Store.add_gateway(store(socket), sg.id,
-              name: template.name,
-              position: %{x: 300, y: y}
-            )
-
-          children = Map.get(template, :children, [])
-          child_sg = Store.get_subgraph(store(socket), child.id)
-          child_input = Tomato.Subgraph.input_node(child_sg)
-          child_output = Tomato.Subgraph.output_node(child_sg)
-
-          # Create each child leaf and wire input -> leaf -> output
-          children
-          |> Enum.with_index()
-          |> Enum.each(fn {child_tmpl, idx} ->
-            {:ok, leaf} =
-              Store.add_node(store(socket), child.id,
-                type: :leaf,
-                name: child_tmpl.name,
-                content: String.trim(child_tmpl.content),
-                position: %{x: 150 + idx * 180, y: 200}
-              )
-
-            Store.add_edge(store(socket), child.id, child_input.id, leaf.id)
-            Store.add_edge(store(socket), child.id, leaf.id, child_output.id)
-          end)
-
-          {:noreply,
-           socket
-           |> assign(:show_template_picker, false)
-           |> assign(:selected_node_id, gw.id)}
-
-        _ ->
-          # Simple leaf node
-          {:ok, node} =
-            Store.add_node(store(socket), sg.id,
-              type: :leaf,
-              name: template.name,
-              content: String.trim(template.content),
-              position: %{x: 300, y: y}
-            )
-
-          {:noreply,
-           socket
-           |> assign(:show_template_picker, false)
-           |> assign(:selected_node_id, node.id)}
-      end
-    else
-      {:noreply, socket}
-    end
-  end
+  def handle_event("add_from_template", params, socket),
+    do: TemplateHandlers.add(params, socket)
 
   def handle_event("add_leaf", params, socket),
     do: NodeHandlers.add_leaf(params, socket)
 
-  def handle_event("add_machine", _params, socket) do
-    sg = socket.assigns.subgraph
-    node_count = map_size(sg.nodes)
-    y = 100 + node_count * 80
-
-    {:ok, _machine, _child} =
-      Store.add_machine(store(socket), sg.id,
-        hostname: "machine-#{node_count}",
-        system: "aarch64-linux",
-        state_version: "24.11",
-        position: %{x: 300, y: y}
-      )
-
-    {:noreply, socket}
-  end
+  def handle_event("add_machine", params, socket),
+    do: NodeHandlers.add_machine(params, socket)
 
   def handle_event("add_gateway", params, socket),
     do: NodeHandlers.add_gateway(params, socket)
@@ -223,15 +148,11 @@ defmodule TomatoWeb.GraphLive do
 
   # --- Undo / Redo ---
 
-  def handle_event("undo", _params, socket) do
-    Store.undo(store(socket))
-    {:noreply, socket}
-  end
+  def handle_event("undo", params, socket),
+    do: GraphStateHandlers.undo(params, socket)
 
-  def handle_event("redo", _params, socket) do
-    Store.redo(store(socket))
-    {:noreply, socket}
-  end
+  def handle_event("redo", params, socket),
+    do: GraphStateHandlers.redo(params, socket)
 
   # --- Search ---
 
@@ -243,11 +164,8 @@ defmodule TomatoWeb.GraphLive do
 
   # --- Backend toggle ---
 
-  def handle_event("toggle_backend", _params, socket) do
-    new_backend = if socket.assigns.graph.backend == :flake, do: :traditional, else: :flake
-    Store.set_backend(store(socket), new_backend)
-    {:noreply, socket}
-  end
+  def handle_event("toggle_backend", params, socket),
+    do: GraphStateHandlers.toggle_backend(params, socket)
 
   # --- Deploy pipeline ---
 
@@ -271,75 +189,23 @@ defmodule TomatoWeb.GraphLive do
 
   # --- Graph management ---
 
-  def handle_event("open_graph_manager", _params, socket) do
-    graph_list = Store.list_graphs(store(socket))
+  def handle_event("open_graph_manager", params, socket),
+    do: GraphStateHandlers.open_manager(params, socket)
 
-    {:noreply,
-     socket
-     |> assign(:show_graph_manager, true)
-     |> assign(:graph_list, graph_list)}
-  end
+  def handle_event("close_graph_manager", params, socket),
+    do: GraphStateHandlers.close_manager(params, socket)
 
-  def handle_event("close_graph_manager", _params, socket) do
-    {:noreply, assign(socket, :show_graph_manager, false)}
-  end
+  def handle_event("load_graph_file", params, socket),
+    do: GraphStateHandlers.load(params, socket)
 
-  def handle_event("load_graph_file", %{"filename" => filename}, socket) do
-    case Store.load_graph(store(socket), filename) do
-      {:ok, graph} ->
-        root = Graph.root_subgraph(graph)
+  def handle_event("new_graph_submit", params, socket),
+    do: GraphStateHandlers.new(params, socket)
 
-        {:noreply,
-         socket
-         |> assign(:graph, graph)
-         |> assign(:subgraph, root)
-         |> assign(:breadcrumb, [{root.id, root.name}])
-         |> assign(:selected_node_id, nil)
-         |> assign(:show_graph_manager, false)
-         |> assign(:current_file, filename)}
+  def handle_event("save_as_submit", params, socket),
+    do: GraphStateHandlers.save_as(params, socket)
 
-      _ ->
-        {:noreply, put_flash(socket, :error, "Failed to load graph")}
-    end
-  end
-
-  def handle_event("new_graph_submit", %{"name" => name}, socket) when name != "" do
-    {:ok, graph, filename} = Store.new_graph(store(socket), name)
-    root = Graph.root_subgraph(graph)
-
-    {:noreply,
-     socket
-     |> assign(:graph, graph)
-     |> assign(:subgraph, root)
-     |> assign(:breadcrumb, [{root.id, root.name}])
-     |> assign(:selected_node_id, nil)
-     |> assign(:show_graph_manager, false)
-     |> assign(:current_file, filename)}
-  end
-
-  def handle_event("new_graph_submit", _params, socket) do
-    {:noreply, socket}
-  end
-
-  def handle_event("save_as_submit", %{"name" => name}, socket) when name != "" do
-    {:ok, filename} = Store.save_as(store(socket), name)
-
-    {:noreply,
-     socket
-     |> assign(:current_file, filename)
-     |> assign(:show_graph_manager, false)
-     |> put_flash(:info, "Saved as #{filename}")}
-  end
-
-  def handle_event("save_as_submit", _params, socket) do
-    {:noreply, socket}
-  end
-
-  def handle_event("delete_graph_file", %{"filename" => filename}, socket) do
-    Store.delete_graph(store(socket), filename)
-    graph_list = Store.list_graphs(store(socket))
-    {:noreply, assign(socket, :graph_list, graph_list)}
-  end
+  def handle_event("delete_graph_file", params, socket),
+    do: GraphStateHandlers.delete(params, socket)
 
   # --- OODN ---
 

@@ -61,6 +61,24 @@ defmodule TomatoWeb.GraphLive.NodeHandlers do
     {:noreply, socket}
   end
 
+  @spec add_machine(map(), socket()) :: result()
+  def add_machine(_params, socket) do
+    store = socket.assigns.store
+    sg = socket.assigns.subgraph
+    node_count = map_size(sg.nodes)
+    y = 100 + node_count * 80
+
+    {:ok, _machine, _child} =
+      Store.add_machine(store, sg.id,
+        hostname: "machine-#{node_count}",
+        system: "aarch64-linux",
+        state_version: "24.11",
+        position: %{x: 300, y: y}
+      )
+
+    {:noreply, socket}
+  end
+
   @spec add_node_at(map(), socket()) :: result()
   def add_node_at(%{"type" => type, "x" => x, "y" => y}, socket) do
     store = socket.assigns.store
