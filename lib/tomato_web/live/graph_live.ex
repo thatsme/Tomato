@@ -7,9 +7,11 @@ defmodule TomatoWeb.GraphLive do
   alias Tomato.{Store, Graph}
 
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(_params, session, socket) do
+    store = Map.get(session, "store", Tomato.Store)
+
     if connected?(socket) do
-      Phoenix.PubSub.subscribe(Tomato.PubSub, "graph:updates")
+      Phoenix.PubSub.subscribe(Tomato.PubSub, Store.topic(store))
     end
 
     graph = Store.get_graph()

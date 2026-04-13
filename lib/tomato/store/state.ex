@@ -14,7 +14,8 @@ defmodule Tomato.Store.State do
           graphs_dir: String.t() | nil,
           flush_ref: reference() | nil,
           undo_stack: [Graph.t()],
-          redo_stack: [Graph.t()]
+          redo_stack: [Graph.t()],
+          name: atom() | nil
         }
 
   defstruct graph: nil,
@@ -22,7 +23,8 @@ defmodule Tomato.Store.State do
             graphs_dir: nil,
             flush_ref: nil,
             undo_stack: [],
-            redo_stack: []
+            redo_stack: [],
+            name: nil
 
   @doc """
   Replace the graph held in state without touching history.

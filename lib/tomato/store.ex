@@ -31,8 +31,9 @@ defmodule Tomato.Store do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
-    name = opts[:name] || __MODULE__
-    GenServer.start_link(__MODULE__, opts, name: name)
+    name = Keyword.get(opts, :name, __MODULE__)
+    gen_opts = if name, do: [name: name], else: []
+    GenServer.start_link(__MODULE__, opts, gen_opts)
   end
 
   @spec get_graph(server()) :: Graph.t()
@@ -159,8 +160,14 @@ defmodule Tomato.Store do
 
     {graph, file_path} = GraphFiles.load_latest_or_create(graphs_dir)
 
-    state = %State{graph: graph, file_path: file_path, graphs_dir: graphs_dir}
-    {:ok, state, {:continue, :maybe_seed}}
+    name = Keyword.get(opts, :name, __MODULE__)
+    state = %State{graph: graph, file_path: file_path, graphs_dir: graphs_dir, name: name}
+
+    if Keyword.get(opts, :auto_seed, true) do
+      {:ok, state, {:continue, :maybe_seed}}
+    else
+      {:ok, state}
+    end
   end
 
   @impl true
@@ -234,7 +241,7 @@ defmodule Tomato.Store do
     case GraphFiles.load(state.graphs_dir, filename) do
       {:ok, graph, path} ->
         new_state = %{state | graph: graph, file_path: path, flush_ref: nil}
-        broadcast(graph)
+        broadcast(state, graph)
         {:reply, {:ok, graph}, new_state}
 
       {:error, _} = error ->
@@ -245,14 +252,14 @@ defmodule Tomato.Store do
   def handle_call({:new_graph, name}, _from, state) do
     {:ok, graph, path, filename} = GraphFiles.new(state.graphs_dir, name)
     new_state = %{state | graph: graph, file_path: path, flush_ref: nil}
-    broadcast(graph)
+    broadcast(state, graph)
     {:reply, {:ok, graph, filename}, new_state}
   end
 
   def handle_call({:save_as, name}, _from, state) do
     {:ok, graph, path, filename} = GraphFiles.save_as(state.graph, state.graphs_dir, name)
     new_state = %{state | graph: graph, file_path: path}
-    broadcast(graph)
+    broadcast(state, graph)
     {:reply, {:ok, filename}, new_state}
   end
 
@@ -345,7 +352,7 @@ defmodule Tomato.Store do
     # OODN position drag is purely visual — don't pollute undo history
     graph = OODN.move(state.graph, position)
     new_state = schedule_flush(%{state | graph: graph})
-    broadcast(graph)
+    broadcast(state, graph)
     {:reply, :ok, new_state}
   end
 
@@ -355,7 +362,7 @@ defmodule Tomato.Store do
     case State.undo(state) do
       {:ok, new_state} ->
         new_state = schedule_flush(new_state)
-        broadcast(new_state.graph)
+        broadcast(new_state, new_state.graph)
         {:reply, :ok, new_state}
 
       error ->
@@ -367,7 +374,7 @@ defmodule Tomato.Store do
     case State.redo(state) do
       {:ok, new_state} ->
         new_state = schedule_flush(new_state)
-        broadcast(new_state.graph)
+        broadcast(new_state, new_state.graph)
         {:reply, :ok, new_state}
 
       error ->
@@ -385,7 +392,7 @@ defmodule Tomato.Store do
       |> State.put_graph(graph)
       |> schedule_flush()
 
-    broadcast(graph)
+    broadcast(new_state, graph)
     new_state
   end
 
@@ -395,7 +402,19 @@ defmodule Tomato.Store do
     %{state | flush_ref: ref}
   end
 
-  defp broadcast(%Graph{} = graph) do
-    Phoenix.PubSub.broadcast(Tomato.PubSub, "graph:updates", {:graph_updated, graph})
+  defp broadcast(%State{name: name}, %Graph{} = graph) do
+    Phoenix.PubSub.broadcast(Tomato.PubSub, topic(name), {:graph_updated, graph})
   end
+
+  @doc """
+  Returns the PubSub topic string for a given store name.
+  LiveViews subscribe to this topic to receive `{:graph_updated, graph}` messages.
+  """
+  @spec topic(atom() | nil) :: String.t()
+  def topic(name) when is_atom(name) and not is_nil(name) do
+    short = name |> Atom.to_string() |> String.replace_prefix("Elixir.", "")
+    "graph:updates:#{short}"
+  end
+
+  def topic(_), do: "graph:updates:anonymous"
 end
