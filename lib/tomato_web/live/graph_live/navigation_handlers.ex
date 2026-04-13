@@ -93,20 +93,48 @@ defmodule TomatoWeb.GraphLive.NavigationHandlers do
 
   @spec goto_search_result(map(), socket()) :: result()
   def goto_search_result(%{"subgraph-id" => sg_id, "node-id" => node_id}, socket) do
-    subgraph = Graph.get_subgraph(socket.assigns.graph, sg_id)
+    case jump_to(socket, sg_id, node_id) do
+      {:ok, socket} ->
+        {:noreply,
+         socket
+         |> assign(:search_query, "")
+         |> assign(:search_results, [])}
 
-    if subgraph do
-      breadcrumb = build_breadcrumb_to(socket.assigns.graph, sg_id)
+      :error ->
+        {:noreply, socket}
+    end
+  end
 
-      {:noreply,
-       socket
-       |> assign(:subgraph, subgraph)
-       |> assign(:breadcrumb, breadcrumb)
-       |> assign(:selected_node_id, node_id)
-       |> assign(:search_query, "")
-       |> assign(:search_results, [])}
-    else
-      {:noreply, socket}
+  @doc """
+  Jump to a node in any subgraph — walks the breadcrumb from the root so
+  the target subgraph becomes active, then selects the node. Used by
+  validation error rows in the generated-output modal to land on the
+  offending leaf regardless of how deeply nested it is inside machine
+  gateways. Shares its implementation with `goto_search_result/2`.
+  """
+  @spec navigate_to_node(map(), socket()) :: result()
+  def navigate_to_node(%{"subgraph-id" => sg_id, "node-id" => node_id}, socket) do
+    case jump_to(socket, sg_id, node_id) do
+      {:ok, socket} -> {:noreply, socket}
+      :error -> {:noreply, socket}
+    end
+  end
+
+  @spec jump_to(socket(), String.t(), String.t()) :: {:ok, socket()} | :error
+  defp jump_to(socket, sg_id, node_id) do
+    case Graph.get_subgraph(socket.assigns.graph, sg_id) do
+      nil ->
+        :error
+
+      subgraph ->
+        breadcrumb = build_breadcrumb_to(socket.assigns.graph, sg_id)
+
+        {:ok,
+         socket
+         |> assign(:subgraph, subgraph)
+         |> assign(:breadcrumb, breadcrumb)
+         |> assign(:selected_node_id, node_id)
+         |> assign(:editing_content_node_id, nil)}
     end
   end
 

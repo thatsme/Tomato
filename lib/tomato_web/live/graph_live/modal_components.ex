@@ -237,7 +237,9 @@ defmodule TomatoWeb.GraphLive.ModalComponents do
           :for={err <- elem(@validation, 1)}
           class="p-3 cursor-pointer hover:bg-error/5"
           phx-click={
-            JS.push("select_node", value: %{"node-id" => err.node_id})
+            JS.push("navigate_to_node",
+              value: %{"subgraph-id" => err.subgraph_id, "node-id" => err.node_id}
+            )
             |> JS.push("close_generated")
           }
         >

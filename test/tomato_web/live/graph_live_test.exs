@@ -157,6 +157,51 @@ defmodule TomatoWeb.GraphLiveTest do
       assert length(assigns.breadcrumb) == 2
       assert assigns.subgraph.id != sg_id
     end
+
+    test "navigate_to_node jumps into a nested subgraph from the root", %{
+      conn: conn,
+      store: store
+    } do
+      # Build the topology via the LiveView: gateway on root, leaf inside it.
+      {:ok, view, _html} = live(conn, ~p"/")
+      root_id = root_sg_id(store)
+      render_click(view, "add_gateway")
+
+      gateway =
+        store
+        |> Store.get_graph()
+        |> Graph.get_subgraph(root_id)
+        |> Map.fetch!(:nodes)
+        |> Enum.find_value(fn {_id, n} -> if n.type == :gateway, do: n end)
+
+      render_click(view, "enter_gateway", %{"node-id" => gateway.id})
+      render_click(view, "add_leaf")
+
+      child_sg_id = gateway.subgraph_id
+
+      nested_leaf_id =
+        store
+        |> Store.get_graph()
+        |> Graph.get_subgraph(child_sg_id)
+        |> Map.fetch!(:nodes)
+        |> Enum.find_value(fn {id, n} -> if n.type == :leaf, do: id end)
+
+      # Walk back to the root — navigate_to_node must work from anywhere,
+      # but the interesting case is jumping into a non-current subgraph.
+      render_click(view, "navigate_breadcrumb", %{"subgraph-id" => root_id})
+      assert :sys.get_state(view.pid).socket.assigns.subgraph.id == root_id
+
+      render_click(view, "navigate_to_node", %{
+        "subgraph-id" => child_sg_id,
+        "node-id" => nested_leaf_id
+      })
+
+      assigns = :sys.get_state(view.pid).socket.assigns
+      assert assigns.subgraph.id == child_sg_id
+      assert assigns.selected_node_id == nested_leaf_id
+      assert length(assigns.breadcrumb) == 2
+      assert [{^root_id, _}, {^child_sg_id, _}] = assigns.breadcrumb
+    end
   end
 
   describe "history" do
