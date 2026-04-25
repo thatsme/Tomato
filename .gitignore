@@ -46,8 +46,9 @@ npm-debug.log
 /config/deploy.secret.exs
 
 .DS_Store
-.claude/
 .giulia/
-CLAUDE.md
 AGENTS.md
 tomato_spec.md
+# Claude Code config (symlinked to private claude-files repo, never committed here)
+.claude
+CLAUDE.md
